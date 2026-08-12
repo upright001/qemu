@@ -1,0 +1,458 @@
+#include "qemu/osdep.h"
+#include "hw/misc/mini-nand-core.h"
+
+typedef struct CoreSnapshot {
+    uint32_t page;
+    uint32_t dma_addr_lo;
+    uint32_t dma_addr_hi;
+    uint32_t length;
+    uint32_t status;
+    uint32_t error_code;
+    uint32_t read_count;
+    bool result_valid;
+    uint8_t page_buffer[MINI_NAND_FLASH_PAGE_SIZE];
+} CoreSnapshot;
+
+static MiniNandCore *spy_core;
+static unsigned int spy_calls;
+static uint32_t spy_page;
+static size_t spy_length;
+static uint32_t spy_read_count_before;
+
+static MiniNandFlashResult spy_flash_read(MiniNandFlash *flash,
+                                          uint32_t page,
+                                          uint8_t *dst,
+                                          size_t length)
+{
+    g_assert_nonnull(spy_core);
+    g_assert_cmpuint(spy_core->status, ==, MINI_NAND_STATUS_BUSY);
+    g_assert_cmpuint(spy_core->error_code, ==, MINI_NAND_ERR_NONE);
+    g_assert_cmpuint(spy_core->read_count, ==,
+                     spy_read_count_before + spy_calls + 1);
+    spy_calls++;
+    spy_page = page;
+    spy_length = length;
+    return mini_nand_flash_read(flash, page, dst, length);
+}
+
+static void spy_reset(MiniNandCore *core)
+{
+    spy_core = core;
+    spy_calls = 0;
+    spy_page = UINT32_MAX;
+    spy_length = 0;
+    spy_read_count_before = core->read_count;
+}
+
+static CoreSnapshot snapshot(const MiniNandCore *core)
+{
+    CoreSnapshot state = {
+        .page = core->page,
+        .dma_addr_lo = core->dma_addr_lo,
+        .dma_addr_hi = core->dma_addr_hi,
+        .length = core->length,
+        .status = core->status,
+        .error_code = core->error_code,
+        .read_count = core->read_count,
+        .result_valid = core->result_valid,
+    };
+
+    memcpy(state.page_buffer, core->page_buffer, sizeof(state.page_buffer));
+    return state;
+}
+
+static void assert_snapshot_equal(const CoreSnapshot *actual,
+                                  const CoreSnapshot *expected)
+{
+    g_assert_cmpuint(actual->page, ==, expected->page);
+    g_assert_cmpuint(actual->dma_addr_lo, ==, expected->dma_addr_lo);
+    g_assert_cmpuint(actual->dma_addr_hi, ==, expected->dma_addr_hi);
+    g_assert_cmpuint(actual->length, ==, expected->length);
+    g_assert_cmpuint(actual->status, ==, expected->status);
+    g_assert_cmpuint(actual->error_code, ==, expected->error_code);
+    g_assert_cmpuint(actual->read_count, ==, expected->read_count);
+    g_assert_cmpint(actual->result_valid, ==, expected->result_valid);
+    g_assert_cmpmem(actual->page_buffer, sizeof(actual->page_buffer),
+                    expected->page_buffer, sizeof(expected->page_buffer));
+}
+
+static void assert_reset_snapshot(const MiniNandCore *core)
+{
+    static const uint8_t zeros[MINI_NAND_FLASH_PAGE_SIZE];
+
+    g_assert_cmpuint(core->page, ==, 0);
+    g_assert_cmpuint(core->dma_addr_lo, ==, 0);
+    g_assert_cmpuint(core->dma_addr_hi, ==, 0);
+    g_assert_cmpuint(core->length, ==, 0);
+    g_assert_cmpuint(core->status, ==, MINI_NAND_STATUS_IDLE);
+    g_assert_cmpuint(core->error_code, ==, MINI_NAND_ERR_NONE);
+    g_assert_cmpuint(core->read_count, ==, 0);
+    g_assert_false(core->result_valid);
+    g_assert_cmpmem(core->page_buffer, sizeof(core->page_buffer),
+                    zeros, sizeof(zeros));
+}
+
+static uint32_t core_read(const MiniNandCore *core, uint32_t offset)
+{
+    MiniNandAccessResult result;
+    uint32_t value = mini_nand_core_read(core, offset, &result);
+
+    g_assert_cmpint(result, ==, MINI_NAND_ACCESS_OK);
+    return value;
+}
+
+static void configure_valid_read(MiniNandCore *core, uint32_t page)
+{
+    g_assert_cmpint(mini_nand_core_write(core, MINI_NAND_REG_PAGE, page),
+                    ==, MINI_NAND_ACCESS_OK);
+    g_assert_cmpint(mini_nand_core_write(core, MINI_NAND_REG_DMA_ADDR_LO,
+                                         0x81000000),
+                    ==, MINI_NAND_ACCESS_OK);
+    g_assert_cmpint(mini_nand_core_write(core, MINI_NAND_REG_DMA_ADDR_HI,
+                                         0),
+                    ==, MINI_NAND_ACCESS_OK);
+    g_assert_cmpint(mini_nand_core_write(core, MINI_NAND_REG_LENGTH,
+                                         MINI_NAND_FLASH_PAGE_SIZE),
+                    ==, MINI_NAND_ACCESS_OK);
+}
+
+static void submit_read(MiniNandCore *core)
+{
+    g_assert_cmpint(mini_nand_core_write(core, MINI_NAND_REG_COMMAND,
+                                         MINI_NAND_CMD_READ),
+                    ==, MINI_NAND_ACCESS_OK);
+}
+
+static void assert_page_pattern(uint32_t page, const uint8_t *data)
+{
+    for (size_t offset = 0; offset < MINI_NAND_FLASH_PAGE_SIZE; offset++) {
+        g_assert_cmpuint(data[offset], ==, (page + offset) & 0xff);
+    }
+}
+
+static void test_construction_and_system_reset(void)
+{
+    MiniNandCore core;
+
+    mini_nand_core_init(&core, spy_flash_read);
+    assert_reset_snapshot(&core);
+    mini_nand_core_write(&core, MINI_NAND_REG_PAGE, 42);
+    mini_nand_core_write(&core, MINI_NAND_REG_LENGTH,
+                         MINI_NAND_FLASH_PAGE_SIZE);
+    mini_nand_core_reset(&core);
+    assert_reset_snapshot(&core);
+}
+
+static void test_register_dispositions(void)
+{
+    static const uint32_t read_only[] = {
+        MINI_NAND_REG_VERSION,
+        MINI_NAND_REG_STATUS,
+        MINI_NAND_REG_ERROR_CODE,
+        MINI_NAND_REG_READ_COUNT,
+        MINI_NAND_REG_FAULT_COUNT,
+    };
+    static const uint32_t reserved[] = {
+        MINI_NAND_REG_IRQ_STATUS,
+        MINI_NAND_REG_IRQ_ENABLE,
+    };
+    MiniNandCore core;
+    CoreSnapshot before;
+    CoreSnapshot after;
+    MiniNandAccessResult result;
+
+    mini_nand_core_init(&core, spy_flash_read);
+    g_assert_cmpuint(core_read(&core, MINI_NAND_REG_VERSION), ==,
+                     MINI_NAND_VERSION);
+    g_assert_cmpuint(core_read(&core, MINI_NAND_REG_COMMAND), ==, 0);
+    g_assert_cmpuint(core_read(&core, MINI_NAND_REG_STATUS), ==,
+                     MINI_NAND_STATUS_IDLE);
+    g_assert_cmpuint(core_read(&core, MINI_NAND_REG_ERROR_CODE), ==,
+                     MINI_NAND_ERR_NONE);
+    g_assert_cmpuint(core_read(&core, MINI_NAND_REG_READ_COUNT), ==, 0);
+    g_assert_cmpuint(core_read(&core, MINI_NAND_REG_FAULT_COUNT), ==, 0);
+    g_assert_cmpint(mini_nand_core_write(&core, MINI_NAND_REG_PAGE, 42),
+                    ==, MINI_NAND_ACCESS_OK);
+    g_assert_cmpint(mini_nand_core_write(&core, MINI_NAND_REG_DMA_ADDR_LO,
+                                         0x81000000),
+                    ==, MINI_NAND_ACCESS_OK);
+    g_assert_cmpint(mini_nand_core_write(&core, MINI_NAND_REG_DMA_ADDR_HI,
+                                         0x12345678),
+                    ==, MINI_NAND_ACCESS_OK);
+    g_assert_cmpint(mini_nand_core_write(&core, MINI_NAND_REG_LENGTH,
+                                         MINI_NAND_FLASH_PAGE_SIZE),
+                    ==, MINI_NAND_ACCESS_OK);
+    g_assert_cmpuint(core_read(&core, MINI_NAND_REG_PAGE), ==, 42);
+    g_assert_cmpuint(core_read(&core, MINI_NAND_REG_DMA_ADDR_LO), ==,
+                     0x81000000);
+    g_assert_cmpuint(core_read(&core, MINI_NAND_REG_DMA_ADDR_HI), ==,
+                     0x12345678);
+    g_assert_cmpuint(core_read(&core, MINI_NAND_REG_LENGTH), ==,
+                     MINI_NAND_FLASH_PAGE_SIZE);
+
+    before = snapshot(&core);
+    for (size_t index = 0; index < G_N_ELEMENTS(read_only); index++) {
+        g_assert_cmpint(mini_nand_core_write(&core, read_only[index], 1),
+                        ==, MINI_NAND_ACCESS_READ_ONLY);
+        after = snapshot(&core);
+        assert_snapshot_equal(&after, &before);
+    }
+    for (size_t index = 0; index < G_N_ELEMENTS(reserved); index++) {
+        g_assert_cmpint(mini_nand_core_write(&core, reserved[index], 1),
+                        ==, MINI_NAND_ACCESS_RESERVED);
+        after = snapshot(&core);
+        assert_snapshot_equal(&after, &before);
+        g_assert_cmpuint(mini_nand_core_read(&core, reserved[index], &result),
+                         ==, 0);
+        g_assert_cmpint(result, ==, MINI_NAND_ACCESS_RESERVED);
+    }
+    g_assert_cmpint(mini_nand_core_write(&core, 0x30, 1),
+                    ==, MINI_NAND_ACCESS_UNDEFINED);
+    after = snapshot(&core);
+    assert_snapshot_equal(&after, &before);
+    g_assert_cmpuint(mini_nand_core_read(&core, 0x30, &result), ==, 0);
+    g_assert_cmpint(result, ==, MINI_NAND_ACCESS_UNDEFINED);
+}
+
+static void test_valid_page_42_read_observes_busy_and_completes(void)
+{
+    MiniNandCore core;
+
+    mini_nand_core_init(&core, spy_flash_read);
+    configure_valid_read(&core, 42);
+    spy_reset(&core);
+    submit_read(&core);
+
+    g_assert_cmpuint(spy_calls, ==, 1);
+    g_assert_cmpuint(spy_page, ==, 42);
+    g_assert_cmpuint(spy_length, ==, MINI_NAND_FLASH_PAGE_SIZE);
+    g_assert_cmpuint(core_read(&core, MINI_NAND_REG_STATUS), ==,
+                     MINI_NAND_STATUS_DONE);
+    g_assert_cmpuint(core_read(&core, MINI_NAND_REG_ERROR_CODE), ==,
+                     MINI_NAND_ERR_NONE);
+    g_assert_cmpuint(core_read(&core, MINI_NAND_REG_READ_COUNT), ==, 1);
+    g_assert_true(core.result_valid);
+    assert_page_pattern(42, core.page_buffer);
+}
+
+static void assert_invalid_request(MiniNandCore *core, MiniNandError error)
+{
+    CoreSnapshot before = snapshot(core);
+    MiniNandFlash flash_before = core->flash;
+
+    spy_reset(core);
+    submit_read(core);
+    g_assert_cmpuint(spy_calls, ==, 0);
+    g_assert_cmpuint(core_read(core, MINI_NAND_REG_STATUS), ==,
+                     MINI_NAND_STATUS_ERROR);
+    g_assert_cmpuint(core_read(core, MINI_NAND_REG_ERROR_CODE), ==, error);
+    g_assert_false(core->result_valid);
+    g_assert_cmpuint(core->read_count, ==, before.read_count);
+    g_assert_cmpmem(core->page_buffer, sizeof(core->page_buffer),
+                    before.page_buffer, sizeof(before.page_buffer));
+    g_assert_cmpmem(&core->flash, sizeof(core->flash), &flash_before,
+                    sizeof(flash_before));
+}
+
+static void test_invalid_command_preserves_valid_result_buffer(void)
+{
+    MiniNandCore core;
+    CoreSnapshot before;
+    MiniNandFlash flash_before;
+
+    mini_nand_core_init(&core, spy_flash_read);
+    configure_valid_read(&core, 42);
+    spy_reset(&core);
+    submit_read(&core);
+    before = snapshot(&core);
+    flash_before = core.flash;
+    spy_reset(&core);
+    g_assert_cmpint(mini_nand_core_write(&core, MINI_NAND_REG_COMMAND, 2),
+                    ==, MINI_NAND_ACCESS_OK);
+    g_assert_cmpuint(spy_calls, ==, 0);
+    g_assert_cmpuint(core_read(&core, MINI_NAND_REG_STATUS), ==,
+                     MINI_NAND_STATUS_ERROR);
+    g_assert_cmpuint(core_read(&core, MINI_NAND_REG_ERROR_CODE), ==,
+                     MINI_NAND_ERR_INVALID_CMD);
+    g_assert_false(core.result_valid);
+    g_assert_cmpuint(core.read_count, ==, before.read_count);
+    g_assert_cmpmem(core.page_buffer, sizeof(core.page_buffer),
+                    before.page_buffer, sizeof(before.page_buffer));
+    g_assert_cmpmem(&core.flash, sizeof(core.flash), &flash_before,
+                    sizeof(flash_before));
+}
+
+static void test_invalid_page_preserves_buffer_and_count(void)
+{
+    MiniNandCore core;
+
+    mini_nand_core_init(&core, spy_flash_read);
+    configure_valid_read(&core, 42);
+    spy_reset(&core);
+    submit_read(&core);
+    mini_nand_core_write(&core, MINI_NAND_REG_PAGE,
+                         MINI_NAND_FLASH_PAGE_COUNT);
+    assert_invalid_request(&core, MINI_NAND_ERR_INVALID_PAGE);
+}
+
+static void test_invalid_length_preserves_buffer_and_count(void)
+{
+    MiniNandCore core;
+
+    mini_nand_core_init(&core, spy_flash_read);
+    configure_valid_read(&core, 42);
+    spy_reset(&core);
+    submit_read(&core);
+    mini_nand_core_write(&core, MINI_NAND_REG_LENGTH,
+                         MINI_NAND_FLASH_PAGE_SIZE - 1);
+    assert_invalid_request(&core, MINI_NAND_ERR_INVALID_LENGTH);
+}
+
+static void test_both_invalid_prefers_page_error(void)
+{
+    MiniNandCore core;
+
+    mini_nand_core_init(&core, spy_flash_read);
+    configure_valid_read(&core, MINI_NAND_FLASH_PAGE_COUNT);
+    mini_nand_core_write(&core, MINI_NAND_REG_LENGTH,
+                         MINI_NAND_FLASH_PAGE_SIZE - 1);
+    assert_invalid_request(&core, MINI_NAND_ERR_INVALID_PAGE);
+}
+
+static void test_done_and_error_recover_with_valid_read(void)
+{
+    MiniNandCore core;
+
+    mini_nand_core_init(&core, spy_flash_read);
+    configure_valid_read(&core, 42);
+    spy_reset(&core);
+    submit_read(&core);
+    configure_valid_read(&core, 43);
+    submit_read(&core);
+    g_assert_cmpuint(core_read(&core, MINI_NAND_REG_STATUS), ==,
+                     MINI_NAND_STATUS_DONE);
+    g_assert_cmpuint(core_read(&core, MINI_NAND_REG_READ_COUNT), ==, 2);
+
+    mini_nand_core_write(&core, MINI_NAND_REG_PAGE,
+                         MINI_NAND_FLASH_PAGE_COUNT);
+    assert_invalid_request(&core, MINI_NAND_ERR_INVALID_PAGE);
+    configure_valid_read(&core, 42);
+    spy_reset(&core);
+    submit_read(&core);
+    g_assert_cmpuint(spy_calls, ==, 1);
+    g_assert_cmpuint(core_read(&core, MINI_NAND_REG_STATUS), ==,
+                     MINI_NAND_STATUS_DONE);
+    g_assert_cmpuint(core_read(&core, MINI_NAND_REG_ERROR_CODE), ==,
+                     MINI_NAND_ERR_NONE);
+    g_assert_cmpuint(core_read(&core, MINI_NAND_REG_READ_COUNT), ==, 3);
+}
+
+static void test_command_reset_from_done_and_error(void)
+{
+    MiniNandCore core;
+
+    mini_nand_core_init(&core, spy_flash_read);
+    configure_valid_read(&core, 42);
+    spy_reset(&core);
+    submit_read(&core);
+    g_assert_cmpint(mini_nand_core_write(&core, MINI_NAND_REG_COMMAND,
+                                         MINI_NAND_CMD_RESET),
+                    ==, MINI_NAND_ACCESS_OK);
+    assert_reset_snapshot(&core);
+
+    configure_valid_read(&core, MINI_NAND_FLASH_PAGE_COUNT);
+    assert_invalid_request(&core, MINI_NAND_ERR_INVALID_PAGE);
+    g_assert_cmpint(mini_nand_core_write(&core, MINI_NAND_REG_COMMAND,
+                                         MINI_NAND_CMD_RESET),
+                    ==, MINI_NAND_ACCESS_OK);
+    assert_reset_snapshot(&core);
+}
+
+static void test_system_and_command_reset_snapshots_match(void)
+{
+    MiniNandCore system_core;
+    MiniNandCore command_core;
+    CoreSnapshot system_snapshot;
+    CoreSnapshot command_snapshot;
+
+    mini_nand_core_init(&system_core, spy_flash_read);
+    mini_nand_core_init(&command_core, spy_flash_read);
+    configure_valid_read(&system_core, 42);
+    configure_valid_read(&command_core, 42);
+    spy_reset(&system_core);
+    submit_read(&system_core);
+    spy_reset(&command_core);
+    submit_read(&command_core);
+    mini_nand_core_reset(&system_core);
+    mini_nand_core_write(&command_core, MINI_NAND_REG_COMMAND,
+                         MINI_NAND_CMD_RESET);
+    system_snapshot = snapshot(&system_core);
+    command_snapshot = snapshot(&command_core);
+    assert_snapshot_equal(&system_snapshot, &command_snapshot);
+}
+
+static void test_reset_preserves_backend_and_flash_handle(void)
+{
+    MiniNandCore core;
+    MiniNandReadFn backend;
+    MiniNandFlash flash;
+
+    mini_nand_core_init(&core, spy_flash_read);
+    core.flash.reserved = 0x5a;
+    backend = core.flash_read;
+    flash = core.flash;
+    configure_valid_read(&core, 42);
+    spy_reset(&core);
+    submit_read(&core);
+    mini_nand_core_reset(&core);
+    g_assert_true(core.flash_read == backend);
+    g_assert_cmpmem(&core.flash, sizeof(core.flash), &flash, sizeof(flash));
+}
+
+static void test_post_reset_valid_read_succeeds(void)
+{
+    MiniNandCore core;
+
+    mini_nand_core_init(&core, spy_flash_read);
+    configure_valid_read(&core, 42);
+    spy_reset(&core);
+    submit_read(&core);
+    mini_nand_core_reset(&core);
+    configure_valid_read(&core, 42);
+    spy_reset(&core);
+    submit_read(&core);
+    g_assert_cmpuint(spy_calls, ==, 1);
+    g_assert_cmpuint(core_read(&core, MINI_NAND_REG_STATUS), ==,
+                     MINI_NAND_STATUS_DONE);
+    g_assert_cmpuint(core_read(&core, MINI_NAND_REG_READ_COUNT), ==, 1);
+}
+
+int main(int argc, char **argv)
+{
+    g_test_init(&argc, &argv, NULL);
+    g_test_add_func("/mini-nand-core/construction-system-reset",
+                    test_construction_and_system_reset);
+    g_test_add_func("/mini-nand-core/register-dispositions",
+                    test_register_dispositions);
+    g_test_add_func("/mini-nand-core/valid-page-42-read",
+                    test_valid_page_42_read_observes_busy_and_completes);
+    g_test_add_func("/mini-nand-core/invalid-command",
+                    test_invalid_command_preserves_valid_result_buffer);
+    g_test_add_func("/mini-nand-core/invalid-page",
+                    test_invalid_page_preserves_buffer_and_count);
+    g_test_add_func("/mini-nand-core/invalid-length",
+                    test_invalid_length_preserves_buffer_and_count);
+    g_test_add_func("/mini-nand-core/both-invalid-page-precedence",
+                    test_both_invalid_prefers_page_error);
+    g_test_add_func("/mini-nand-core/recovery",
+                    test_done_and_error_recover_with_valid_read);
+    g_test_add_func("/mini-nand-core/command-reset",
+                    test_command_reset_from_done_and_error);
+    g_test_add_func("/mini-nand-core/reset-snapshot-equality",
+                    test_system_and_command_reset_snapshots_match);
+    g_test_add_func("/mini-nand-core/reset-preserves-backend",
+                    test_reset_preserves_backend_and_flash_handle);
+    g_test_add_func("/mini-nand-core/post-reset-read",
+                    test_post_reset_valid_read_succeeds);
+    return g_test_run();
+}

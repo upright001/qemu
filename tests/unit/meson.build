@@ -141,6 +141,15 @@ if have_system
     'test-mini-nand-flash': [
       meson.project_source_root() / 'hw/misc/mini-nand-flash.c',
     ],
+    'test-mini-nand-core': [
+      meson.project_source_root() / 'hw/misc/mini-nand-flash.c',
+      meson.project_source_root() / 'hw/misc/mini-nand-core.c',
+    ],
+    'test-mini-nand-ctrl': [
+      meson.project_source_root() / 'hw/misc/mini-nand-core.c',
+      meson.project_source_root() / 'hw/misc/mini-nand-mmio.c',
+      meson.project_source_root() / 'hw/misc/mini-nand-flash.c',
+    ],
   }
   if config_host_data.get('CONFIG_INOTIFY1')
     tests += {'test-util-filemonitor': []}

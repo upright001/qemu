@@ -217,6 +217,9 @@ config MCHP_PFSOC_SYSREG
 config SIFIVE_TEST
     bool
 
+config MINI_NAND_CTRL
+    bool
+
 config SIFIVE_E_PRCI
     bool
 

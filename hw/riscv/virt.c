@@ -42,6 +42,8 @@
 #include "hw/intc/riscv_aclint.h"
 #include "hw/intc/riscv_aplic.h"
 #include "hw/intc/sifive_plic.h"
+#include "hw/misc/mini-nand-ctrl.h"
+#include "hw/misc/mini-nand-mmio.h"
 #include "hw/misc/sifive_test.h"
 #include "hw/core/platform-bus.h"
 #include "chardev/char.h"
@@ -95,6 +97,7 @@ static const MemMapEntry virt_memmap[] = {
     [VIRT_UART0] =        { 0x10000000,         0x100 },
     [VIRT_VIRTIO] =       { 0x10001000,        0x1000 },
     [VIRT_FW_CFG] =       { 0x10100000,          0x18 },
+    [VIRT_MINI_NAND] =    { 0x10110000,        0x1000 },
     [VIRT_FLASH] =        { 0x20000000,     0x4000000 },
     [VIRT_IMSIC_M] =      { 0x24000000, VIRT_IMSIC_MAX_SIZE },
     [VIRT_IMSIC_S] =      { 0x28000000, VIRT_IMSIC_MAX_SIZE },
@@ -1517,6 +1520,31 @@ static void virt_machine_done(Notifier *notifier, void *data)
     }
 }
 
+static void virt_create_mini_nand(RISCVVirtState *s)
+{
+    DeviceState *dev;
+
+    if (!s->mini_nand) {
+        return;
+    }
+
+    /*
+     * 실제 board map을 production helper로 검사한다.
+     * overlap 규칙을 하나만 유지하기 위함이다.
+     */
+    if (!mini_nand_mmio_range_is_free(virt_memmap,
+                                      ARRAY_SIZE(virt_memmap),
+                                      VIRT_MINI_NAND)) {
+        error_report("mini-nand MMIO range overlaps the RISC-V virt map");
+        exit(1);
+    }
+
+    dev = qdev_new(TYPE_MINI_NAND_CTRL);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0,
+                    s->memmap[VIRT_MINI_NAND].base);
+}
+
 static void virt_machine_init(MachineState *machine)
 {
     RISCVVirtState *s = RISCV_VIRT_MACHINE(machine);
@@ -1682,6 +1710,8 @@ static void virt_machine_init(MachineState *machine)
     /* SiFive Test MMIO device */
     sifive_test_create(s->memmap[VIRT_TEST].base);
 
+    virt_create_mini_nand(s);
+
     /* VirtIO MMIO devices */
     for (i = 0; i < VIRTIO_COUNT; i++) {
         sysbus_create_simple("virtio-mmio",
@@ -1755,6 +1785,7 @@ static void virt_machine_instance_init(Object *obj)
     s->oem_table_id = g_strndup(ACPI_BUILD_APPNAME8, 8);
     s->acpi = ON_OFF_AUTO_AUTO;
     s->iommu_sys = ON_OFF_AUTO_AUTO;
+    s->mini_nand = false;
 }
 
 static char *virt_get_aia_guests(Object *obj, Error **errp)
@@ -1825,6 +1856,20 @@ static void virt_set_aclint(Object *obj, bool value, Error **errp)
     RISCVVirtState *s = RISCV_VIRT_MACHINE(obj);
 
     s->have_aclint = value;
+}
+
+static bool virt_get_mini_nand(Object *obj, Error **errp)
+{
+    RISCVVirtState *s = RISCV_VIRT_MACHINE(obj);
+
+    return s->mini_nand;
+}
+
+static void virt_set_mini_nand(Object *obj, bool value, Error **errp)
+{
+    RISCVVirtState *s = RISCV_VIRT_MACHINE(obj);
+
+    s->mini_nand = value;
 }
 
 bool virt_is_iommu_sys_enabled(RISCVVirtState *s)
@@ -1947,6 +1992,11 @@ static void virt_machine_class_init(ObjectClass *oc, const void *data)
                                           "(TCG only) Set on/off to "
                                           "enable/disable emulating "
                                           "ACLINT devices");
+
+    object_class_property_add_bool(oc, "mini-nand", virt_get_mini_nand,
+                                   virt_set_mini_nand);
+    object_class_property_set_description(oc, "mini-nand",
+                                          "Enable the Mini NAND controller");
 
     object_class_property_add_str(oc, "aia", virt_get_aia,
                                   virt_set_aia);
