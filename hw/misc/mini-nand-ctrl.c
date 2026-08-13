@@ -1,13 +1,15 @@
 #include "qemu/osdep.h"
 #include "hw/misc/mini-nand-ctrl.h"
 #include "hw/misc/mini-nand-mmio.h"
+#include "system/address-spaces.h"
 
 static void mini_nand_ctrl_init(Object *obj)
 {
     MiniNandCtrlState *s = MINI_NAND_CTRL(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
 
-    mini_nand_core_init(&s->core, mini_nand_flash_read);
+    mini_nand_core_init(&s->core, mini_nand_flash_read,
+                        mini_nand_mmio_dma_write, &address_space_memory);
     /*
      * MMIO callback에는 core만 전달한다.
      * QOM 없는 test도 production path를 공유한다.

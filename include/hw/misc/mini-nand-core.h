@@ -56,9 +56,16 @@ typedef MiniNandFlashResult (*MiniNandReadFn)(
     size_t length
 );
 
+typedef bool (*MiniNandDmaWriteFn)(void *opaque,
+                                   uint64_t address,
+                                   const uint8_t *source,
+                                   size_t length);
+
 typedef struct MiniNandCore {
     MiniNandFlash flash;
     MiniNandReadFn flash_read;
+    MiniNandDmaWriteFn dma_write;
+    void *dma_opaque;
     uint32_t page;
     uint32_t dma_addr_lo;
     uint32_t dma_addr_hi;
@@ -70,7 +77,10 @@ typedef struct MiniNandCore {
     uint8_t page_buffer[MINI_NAND_FLASH_PAGE_SIZE];
 } MiniNandCore;
 
-void mini_nand_core_init(MiniNandCore *core, MiniNandReadFn flash_read);
+void mini_nand_core_init(MiniNandCore *core,
+                         MiniNandReadFn flash_read,
+                         MiniNandDmaWriteFn dma_write,
+                         void *dma_opaque);
 void mini_nand_core_reset(MiniNandCore *core);
 uint32_t mini_nand_core_read(const MiniNandCore *core,
                              uint32_t offset,

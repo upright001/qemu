@@ -3,6 +3,18 @@
 #include "hw/misc/mini-nand-mmio.h"
 #include "qemu/log.h"
 #include "qemu/range.h"
+#include "system/dma.h"
+
+bool mini_nand_mmio_dma_write(void *opaque,
+                              uint64_t address,
+                              const uint8_t *source,
+                              size_t length)
+{
+    AddressSpace *address_space = opaque;
+
+    return dma_memory_write(address_space, address, source, length,
+                            MEMTXATTRS_UNSPECIFIED) == MEMTX_OK;
+}
 
 static const char *mini_nand_access_class(MiniNandAccessResult result)
 {

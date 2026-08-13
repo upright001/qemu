@@ -7,6 +7,33 @@
 #include "qemu/log.h"
 #include "qemu/rcu.h"
 
+typedef struct AddressSpaceRwCapture {
+    AddressSpace *address_space;
+    hwaddr address;
+    MemTxAttrs attrs;
+    void *buffer;
+    hwaddr length;
+    bool is_write;
+    unsigned int calls;
+    MemTxResult result;
+} AddressSpaceRwCapture;
+
+static AddressSpaceRwCapture dma_capture;
+
+MemTxResult address_space_rw(AddressSpace *as, hwaddr addr,
+                             MemTxAttrs attrs, void *buf,
+                             hwaddr len, bool is_write)
+{
+    dma_capture.address_space = as;
+    dma_capture.address = addr;
+    dma_capture.attrs = attrs;
+    dma_capture.buffer = buf;
+    dma_capture.length = len;
+    dma_capture.is_write = is_write;
+    dma_capture.calls++;
+    return dma_capture.result;
+}
+
 typedef struct LogCapture {
     bool temp_created;
     bool log_configured;
@@ -16,6 +43,68 @@ typedef struct LogCapture {
     char *contents;
     char *error_message;
 } LogCapture;
+
+static bool test_dma_write(void *opaque, uint64_t address,
+                           const uint8_t *source, size_t length)
+{
+    (void)opaque;
+    (void)address;
+    (void)source;
+    (void)length;
+    return true;
+}
+
+static void assert_dma_capture(AddressSpace *address_space,
+                               uint64_t address,
+                               const uint8_t *source)
+{
+    g_assert_cmpuint(dma_capture.calls, ==, 1);
+    g_assert_true(dma_capture.address_space == address_space);
+    g_assert_cmphex(dma_capture.address, ==, address);
+    g_assert_true(dma_capture.buffer == source);
+    g_assert_cmpmem(dma_capture.buffer, dma_capture.length,
+                    source, MINI_NAND_FLASH_PAGE_SIZE);
+    g_assert_cmpuint(dma_capture.length, ==, MINI_NAND_FLASH_PAGE_SIZE);
+    g_assert_true(dma_capture.is_write);
+    g_assert_true(dma_capture.attrs.unspecified);
+    g_assert_false(dma_capture.attrs.secure);
+    g_assert_cmpuint(dma_capture.attrs.space, ==, 0);
+    g_assert_false(dma_capture.attrs.user);
+    g_assert_false(dma_capture.attrs.memory);
+    g_assert_false(dma_capture.attrs.debug);
+    g_assert_cmpuint(dma_capture.attrs.requester_id, ==, 0);
+    g_assert_cmpuint(dma_capture.attrs.pid, ==, 0);
+    g_assert_cmpuint(dma_capture.attrs.address_type, ==, 0);
+    g_assert_cmpuint(dma_capture.attrs._reserved1, ==, 0);
+    g_assert_cmpuint(dma_capture.attrs._reserved2, ==, 0);
+}
+
+static void test_dma_adapter_arguments_and_results(void)
+{
+    static uint8_t source[MINI_NAND_FLASH_PAGE_SIZE];
+    static AddressSpace address_space;
+    static const MemTxResult failures[] = {
+        MEMTX_ERROR,
+        MEMTX_DECODE_ERROR,
+    };
+    const uint64_t address = UINT64_C(0x1234567881000000);
+
+    for (size_t index = 0; index < sizeof(source); index++) {
+        source[index] = (uint8_t)(index ^ 0xa5);
+    }
+
+    dma_capture = (AddressSpaceRwCapture) { .result = MEMTX_OK };
+    g_assert_true(mini_nand_mmio_dma_write(&address_space, address,
+                                           source, sizeof(source)));
+    assert_dma_capture(&address_space, address, source);
+
+    for (size_t index = 0; index < G_N_ELEMENTS(failures); index++) {
+        dma_capture = (AddressSpaceRwCapture) { .result = failures[index] };
+        g_assert_false(mini_nand_mmio_dma_write(&address_space, address,
+                                                source, sizeof(source)));
+        assert_dma_capture(&address_space, address, source);
+    }
+}
 
 static void test_descriptor_contract(void)
 {
@@ -53,7 +142,8 @@ static void test_callbacks_delegate_and_preserve_rejected_writes(void)
 {
     MiniNandCore core;
 
-    mini_nand_core_init(&core, mini_nand_flash_read);
+    mini_nand_core_init(&core, mini_nand_flash_read,
+                        test_dma_write, &core);
     adapter_write(&core, MINI_NAND_REG_PAGE, 42);
     adapter_write(&core, MINI_NAND_REG_DMA_ADDR_LO, 0x81000000);
     adapter_write(&core, MINI_NAND_REG_DMA_ADDR_HI, 0x12345678);
@@ -94,7 +184,8 @@ static void exercise_log_contract(void)
 {
     MiniNandCore core;
 
-    mini_nand_core_init(&core, mini_nand_flash_read);
+    mini_nand_core_init(&core, mini_nand_flash_read,
+                        test_dma_write, &core);
     adapter_write(&core, MINI_NAND_REG_PAGE, 42);
     adapter_read(&core, MINI_NAND_REG_VERSION);
     adapter_read(&core, MINI_NAND_REG_COMMAND);
@@ -258,6 +349,8 @@ static void test_mmio_range_contract(void)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    g_test_add_func("/mini-nand-ctrl/dma-adapter",
+                    test_dma_adapter_arguments_and_results);
     g_test_add_func("/mini-nand-ctrl/descriptor",
                     test_descriptor_contract);
     g_test_add_func("/mini-nand-ctrl/callbacks",

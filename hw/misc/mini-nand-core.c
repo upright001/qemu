@@ -1,10 +1,15 @@
 #include "qemu/osdep.h"
 #include "hw/misc/mini-nand-core.h"
 
-void mini_nand_core_init(MiniNandCore *core, MiniNandReadFn flash_read)
+void mini_nand_core_init(MiniNandCore *core,
+                         MiniNandReadFn flash_read,
+                         MiniNandDmaWriteFn dma_write,
+                         void *dma_opaque)
 {
     memset(core, 0, sizeof(*core));
     core->flash_read = flash_read;
+    core->dma_write = dma_write;
+    core->dma_opaque = dma_opaque;
     mini_nand_core_reset(core);
 }
 
@@ -76,6 +81,7 @@ MiniNandAccessResult mini_nand_core_write(MiniNandCore *core,
                                           uint32_t value)
 {
     MiniNandFlashResult flash_result;
+    uint64_t dma_address;
 
     switch (offset) {
     case MINI_NAND_REG_PAGE:
@@ -121,16 +127,36 @@ MiniNandAccessResult mini_nand_core_write(MiniNandCore *core,
             return MINI_NAND_ACCESS_OK;
         }
 
+        dma_address = ((uint64_t)core->dma_addr_hi << 32) |
+                      core->dma_addr_lo;
+        if (dma_address > UINT64_MAX - core->length) {
+            core->status = MINI_NAND_STATUS_ERROR;
+            core->error_code = MINI_NAND_ERR_DMA;
+            core->result_valid = false;
+            return MINI_NAND_ACCESS_OK;
+        }
+
         /*
-         * 동기 Flash seam은 BUSY 상태를 먼저 거쳐야 한다.
+         * 새 동기 작업은 이전 결과를 먼저 무효화한다.
+         * 두 callback은 같은 BUSY/NONE/count 상태를 관찰하고,
+         * Flash가 채운 내부 page buffer만 DMA 경계로 전달한다.
          */
         core->error_code = MINI_NAND_ERR_NONE;
         core->status = MINI_NAND_STATUS_BUSY;
+        core->result_valid = false;
         core->read_count++;
         flash_result = core->flash_read(&core->flash, core->page,
                                         core->page_buffer,
                                         sizeof(core->page_buffer));
         assert(flash_result == MINI_NAND_FLASH_OK);
+        if (!core->dma_write(core->dma_opaque, dma_address,
+                             core->page_buffer,
+                             sizeof(core->page_buffer))) {
+            core->status = MINI_NAND_STATUS_ERROR;
+            core->error_code = MINI_NAND_ERR_DMA;
+            core->result_valid = false;
+            return MINI_NAND_ACCESS_OK;
+        }
         core->status = MINI_NAND_STATUS_DONE;
         core->result_valid = true;
         return MINI_NAND_ACCESS_OK;
