@@ -12,6 +12,7 @@ struct MiniNandCtrlState {
     SysBusDevice parent_obj;
     MemoryRegion mmio;
     MiniNandCore core;
+    uint32_t fail_nth;
 };
 
 #endif

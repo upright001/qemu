@@ -29,6 +29,7 @@ system_ss.add(when: 'CONFIG_VIRT_CTRL', if_true: files('virt_ctrl.c'))
 # RISC-V devices
 system_ss.add(when: 'CONFIG_MINI_NAND_CTRL', if_true: files(
   'mini-nand-flash.c',
+  'mini-nand-fault-policy.c',
   'mini-nand-core.c',
   'mini-nand-mmio.c',
   'mini-nand-ctrl.c',

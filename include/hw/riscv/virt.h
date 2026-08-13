@@ -56,6 +56,7 @@ struct RISCVVirtState {
     int fdt_size;
     bool have_aclint;
     bool mini_nand;
+    uint32_t mini_nand_fail_nth;
     RISCVVirtAIAType aia_type;
     int aia_guests;
     char *oem_id;

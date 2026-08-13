@@ -143,7 +143,8 @@ static void test_callbacks_delegate_and_preserve_rejected_writes(void)
     MiniNandCore core;
 
     mini_nand_core_init(&core, mini_nand_flash_read,
-                        test_dma_write, &core);
+                        test_dma_write, &core,
+                        (MiniNandFaultConfig){ .fail_nth = 0 });
     adapter_write(&core, MINI_NAND_REG_PAGE, 42);
     adapter_write(&core, MINI_NAND_REG_DMA_ADDR_LO, 0x81000000);
     adapter_write(&core, MINI_NAND_REG_DMA_ADDR_HI, 0x12345678);
@@ -185,7 +186,8 @@ static void exercise_log_contract(void)
     MiniNandCore core;
 
     mini_nand_core_init(&core, mini_nand_flash_read,
-                        test_dma_write, &core);
+                        test_dma_write, &core,
+                        (MiniNandFaultConfig){ .fail_nth = 0 });
     adapter_write(&core, MINI_NAND_REG_PAGE, 42);
     adapter_read(&core, MINI_NAND_REG_VERSION);
     adapter_read(&core, MINI_NAND_REG_COMMAND);

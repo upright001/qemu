@@ -4,12 +4,15 @@
 void mini_nand_core_init(MiniNandCore *core,
                          MiniNandReadFn flash_read,
                          MiniNandDmaWriteFn dma_write,
-                         void *dma_opaque)
+                         void *dma_opaque,
+                         MiniNandFaultConfig fault_config)
 {
     memset(core, 0, sizeof(*core));
     core->flash_read = flash_read;
     core->dma_write = dma_write;
     core->dma_opaque = dma_opaque;
+    mini_nand_fault_policy_init(&core->fault_policy, fault_config);
+    core->fault_count = 0;
     mini_nand_core_reset(core);
 }
 
@@ -27,6 +30,8 @@ void mini_nand_core_reset(MiniNandCore *core)
     core->status = MINI_NAND_STATUS_IDLE;
     core->error_code = MINI_NAND_ERR_NONE;
     core->read_count = 0;
+    core->fault_count = 0;
+    mini_nand_fault_policy_reset(&core->fault_policy);
     core->result_valid = false;
     memset(core->page_buffer, 0, sizeof(core->page_buffer));
 }
@@ -65,7 +70,7 @@ uint32_t mini_nand_core_read(const MiniNandCore *core,
         return core->read_count;
     case MINI_NAND_REG_FAULT_COUNT:
         *result = MINI_NAND_ACCESS_OK;
-        return 0;
+        return core->fault_count;
     case MINI_NAND_REG_IRQ_STATUS:
     case MINI_NAND_REG_IRQ_ENABLE:
         *result = MINI_NAND_ACCESS_RESERVED;
@@ -105,8 +110,8 @@ MiniNandAccessResult mini_nand_core_write(MiniNandCore *core,
         /*
          * 검증 실패는 이전 page buffer를 보존한다.
          * 그러나 stale 결과를 재사용할 수는 없다.
-         * Flash 호출과 read_count 증가는
-         * 세 검증을 통과한 뒤에만 허용한다.
+         * Flash 호출과 sequence/count 증가는
+         * 네 검증을 통과한 뒤에만 허용한다.
          */
         if (value != MINI_NAND_CMD_READ) {
             core->status = MINI_NAND_STATUS_ERROR;
@@ -145,6 +150,16 @@ MiniNandAccessResult mini_nand_core_write(MiniNandCore *core,
         core->status = MINI_NAND_STATUS_BUSY;
         core->result_valid = false;
         core->read_count++;
+        if (mini_nand_fault_policy_evaluate_read(&core->fault_policy)) {
+            /*
+             * Fault match는 기존 내부 결과와 guest memory를 보존하려고
+             * Flash와 DMA callback에 도달하기 전에 동기 종료한다.
+             */
+            core->status = MINI_NAND_STATUS_ERROR;
+            core->error_code = MINI_NAND_ERR_UNCORRECTABLE;
+            core->fault_count++;
+            return MINI_NAND_ACCESS_OK;
+        }
         flash_result = core->flash_read(&core->flash, core->page,
                                         core->page_buffer,
                                         sizeof(core->page_buffer));

@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "hw/misc/mini-nand-fault-policy.h"
 #include "hw/misc/mini-nand-flash.h"
 
 #define MINI_NAND_VERSION          0x00010000U
@@ -73,6 +74,8 @@ typedef struct MiniNandCore {
     uint32_t status;
     uint32_t error_code;
     uint32_t read_count;
+    uint32_t fault_count;
+    MiniNandFaultPolicy fault_policy;
     bool result_valid;
     uint8_t page_buffer[MINI_NAND_FLASH_PAGE_SIZE];
 } MiniNandCore;
@@ -80,7 +83,8 @@ typedef struct MiniNandCore {
 void mini_nand_core_init(MiniNandCore *core,
                          MiniNandReadFn flash_read,
                          MiniNandDmaWriteFn dma_write,
-                         void *dma_opaque);
+                         void *dma_opaque,
+                         MiniNandFaultConfig fault_config);
 void mini_nand_core_reset(MiniNandCore *core);
 uint32_t mini_nand_core_read(const MiniNandCore *core,
                              uint32_t offset,

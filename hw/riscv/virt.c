@@ -1540,6 +1540,7 @@ static void virt_create_mini_nand(RISCVVirtState *s)
     }
 
     dev = qdev_new(TYPE_MINI_NAND_CTRL);
+    qdev_prop_set_uint32(dev, "fail-nth", s->mini_nand_fail_nth);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0,
                     s->memmap[VIRT_MINI_NAND].base);
@@ -1786,6 +1787,7 @@ static void virt_machine_instance_init(Object *obj)
     s->acpi = ON_OFF_AUTO_AUTO;
     s->iommu_sys = ON_OFF_AUTO_AUTO;
     s->mini_nand = false;
+    s->mini_nand_fail_nth = 0;
 }
 
 static char *virt_get_aia_guests(Object *obj, Error **errp)
@@ -1870,6 +1872,24 @@ static void virt_set_mini_nand(Object *obj, bool value, Error **errp)
     RISCVVirtState *s = RISCV_VIRT_MACHINE(obj);
 
     s->mini_nand = value;
+}
+
+static void virt_get_mini_nand_fail_nth(Object *obj, Visitor *v,
+                                        const char *name, void *opaque,
+                                        Error **errp)
+{
+    RISCVVirtState *s = RISCV_VIRT_MACHINE(obj);
+
+    visit_type_uint32(v, name, &s->mini_nand_fail_nth, errp);
+}
+
+static void virt_set_mini_nand_fail_nth(Object *obj, Visitor *v,
+                                        const char *name, void *opaque,
+                                        Error **errp)
+{
+    RISCVVirtState *s = RISCV_VIRT_MACHINE(obj);
+
+    visit_type_uint32(v, name, &s->mini_nand_fail_nth, errp);
 }
 
 bool virt_is_iommu_sys_enabled(RISCVVirtState *s)
@@ -1997,6 +2017,12 @@ static void virt_machine_class_init(ObjectClass *oc, const void *data)
                                    virt_set_mini_nand);
     object_class_property_set_description(oc, "mini-nand",
                                           "Enable the Mini NAND controller");
+    object_class_property_add(oc, "mini-nand-fail-nth", "uint32",
+                              virt_get_mini_nand_fail_nth,
+                              virt_set_mini_nand_fail_nth, NULL, NULL);
+    object_class_property_set_description(
+        oc, "mini-nand-fail-nth",
+        "Fail the selected eligible Mini NAND READ exactly once");
 
     object_class_property_add_str(oc, "aia", virt_get_aia,
                                   virt_set_aia);
