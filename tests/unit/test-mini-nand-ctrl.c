@@ -20,6 +20,14 @@ typedef struct AddressSpaceRwCapture {
 
 static AddressSpaceRwCapture dma_capture;
 
+typedef struct PostWriteCapture {
+    MiniNandCore *core;
+    unsigned int calls;
+    uint32_t irq_status[4];
+    uint32_t irq_enable[4];
+    bool irq_level[4];
+} PostWriteCapture;
+
 MemTxResult address_space_rw(AddressSpace *as, hwaddr addr,
                              MemTxAttrs attrs, void *buf,
                              hwaddr len, bool is_write)
@@ -52,6 +60,18 @@ static bool test_dma_write(void *opaque, uint64_t address,
     (void)source;
     (void)length;
     return true;
+}
+
+static void capture_post_write(void *opaque)
+{
+    PostWriteCapture *capture = opaque;
+    unsigned int index = capture->calls;
+
+    g_assert_cmpuint(index, <, G_N_ELEMENTS(capture->irq_status));
+    capture->irq_status[index] = capture->core->irq_status;
+    capture->irq_enable[index] = capture->core->irq_enable;
+    capture->irq_level[index] = mini_nand_core_irq_level(capture->core);
+    capture->calls++;
 }
 
 static void assert_dma_capture(AddressSpace *address_space,
@@ -119,84 +139,134 @@ static void test_descriptor_contract(void)
     g_assert_false(mini_nand_mmio_ops.impl.unaligned);
 }
 
-static uint32_t adapter_read(MiniNandCore *core, hwaddr offset)
+static uint32_t adapter_read(MiniNandMmioAdapter *adapter, hwaddr offset)
 {
-    return mini_nand_mmio_ops.read(core, offset, 4);
+    return mini_nand_mmio_ops.read(adapter, offset, 4);
 }
 
-static void adapter_write(MiniNandCore *core, hwaddr offset, uint32_t value)
+static void adapter_write(MiniNandMmioAdapter *adapter, hwaddr offset,
+                          uint32_t value)
 {
-    mini_nand_mmio_ops.write(core, offset, value, 4);
+    mini_nand_mmio_ops.write(adapter, offset, value, 4);
 }
 
-static void assert_rejected_write_preserves_core(MiniNandCore *core,
+static void assert_rejected_write_preserves_core(MiniNandMmioAdapter *adapter,
+                                                 MiniNandCore *core,
                                                  hwaddr offset)
 {
     MiniNandCore before = *core;
 
-    adapter_write(core, offset, 0xa5a5a5a5);
+    adapter_write(adapter, offset, 0xa5a5a5a5);
     g_assert_cmpmem(core, sizeof(*core), &before, sizeof(before));
 }
 
 static void test_callbacks_delegate_and_preserve_rejected_writes(void)
 {
     MiniNandCore core;
+    MiniNandMmioAdapter adapter;
+    PostWriteCapture capture = { .core = &core };
 
     mini_nand_core_init(&core, mini_nand_flash_read,
                         test_dma_write, &core,
                         (MiniNandFaultConfig){ .fail_nth = 0 });
-    adapter_write(&core, MINI_NAND_REG_PAGE, 42);
-    adapter_write(&core, MINI_NAND_REG_DMA_ADDR_LO, 0x81000000);
-    adapter_write(&core, MINI_NAND_REG_DMA_ADDR_HI, 0x12345678);
-    adapter_write(&core, MINI_NAND_REG_LENGTH, MINI_NAND_FLASH_PAGE_SIZE);
+    mini_nand_mmio_adapter_init(&adapter, &core, NULL, NULL);
+    adapter_write(&adapter, MINI_NAND_REG_PAGE, 42);
+    adapter_write(&adapter, MINI_NAND_REG_DMA_ADDR_LO, 0x81000000);
+    adapter_write(&adapter, MINI_NAND_REG_DMA_ADDR_HI, 0);
+    adapter_write(&adapter, MINI_NAND_REG_LENGTH, MINI_NAND_FLASH_PAGE_SIZE);
 
-    g_assert_cmpuint(adapter_read(&core, MINI_NAND_REG_VERSION), ==,
+    g_assert_cmpuint(adapter_read(&adapter, MINI_NAND_REG_VERSION), ==,
                      MINI_NAND_VERSION);
-    g_assert_cmpuint(adapter_read(&core, MINI_NAND_REG_COMMAND), ==, 0);
-    g_assert_cmpuint(adapter_read(&core, MINI_NAND_REG_PAGE), ==, 42);
-    g_assert_cmpuint(adapter_read(&core, MINI_NAND_REG_DMA_ADDR_LO), ==,
+    g_assert_cmpuint(adapter_read(&adapter, MINI_NAND_REG_COMMAND), ==, 0);
+    g_assert_cmpuint(adapter_read(&adapter, MINI_NAND_REG_PAGE), ==, 42);
+    g_assert_cmpuint(adapter_read(&adapter, MINI_NAND_REG_DMA_ADDR_LO), ==,
                      0x81000000);
-    g_assert_cmpuint(adapter_read(&core, MINI_NAND_REG_DMA_ADDR_HI), ==,
-                     0x12345678);
-    g_assert_cmpuint(adapter_read(&core, MINI_NAND_REG_LENGTH), ==,
+    g_assert_cmpuint(adapter_read(&adapter, MINI_NAND_REG_DMA_ADDR_HI), ==, 0);
+    g_assert_cmpuint(adapter_read(&adapter, MINI_NAND_REG_LENGTH), ==,
                      MINI_NAND_FLASH_PAGE_SIZE);
 
-    adapter_write(&core, MINI_NAND_REG_COMMAND, MINI_NAND_CMD_READ);
-    g_assert_cmpuint(adapter_read(&core, MINI_NAND_REG_STATUS), ==,
-                     MINI_NAND_STATUS_DONE);
-    g_assert_cmpuint(adapter_read(&core, MINI_NAND_REG_ERROR_CODE), ==,
-                     MINI_NAND_ERR_NONE);
-    g_assert_cmpuint(adapter_read(&core, MINI_NAND_REG_READ_COUNT), ==, 1);
-    g_assert_true(core.result_valid);
-    g_assert_cmpuint(core.page_buffer[0], ==, 0x2a);
-    g_assert_cmpuint(core.page_buffer[1], ==, 0x2b);
-    g_assert_cmpuint(core.page_buffer[MINI_NAND_FLASH_PAGE_SIZE - 1], ==,
-                     0x29);
-    g_assert_cmpuint(adapter_read(&core, MINI_NAND_REG_COMMAND), ==, 0);
-    g_assert_cmpuint(adapter_read(&core, MINI_NAND_REG_IRQ_STATUS), ==, 0);
-    g_assert_cmpuint(adapter_read(&core, 0x30), ==, 0);
+    mini_nand_mmio_adapter_init(&adapter, &core, capture_post_write, &capture);
+    adapter_write(&adapter, MINI_NAND_REG_COMMAND, MINI_NAND_CMD_READ);
+    adapter_write(&adapter, MINI_NAND_REG_IRQ_ENABLE,
+                  MINI_NAND_IRQ_VALID_MASK);
+    adapter_write(&adapter, MINI_NAND_REG_IRQ_STATUS,
+                  MINI_NAND_IRQ_COMPLETE);
+    adapter_write(&adapter, MINI_NAND_REG_COMMAND, MINI_NAND_CMD_RESET);
 
-    assert_rejected_write_preserves_core(&core, MINI_NAND_REG_VERSION);
-    assert_rejected_write_preserves_core(&core, MINI_NAND_REG_IRQ_STATUS);
-    assert_rejected_write_preserves_core(&core, 0x30);
+    g_assert_cmpuint(capture.calls, ==, 4);
+    g_assert_cmpuint(capture.irq_status[0], ==, MINI_NAND_IRQ_COMPLETE);
+    g_assert_cmpuint(capture.irq_enable[0], ==, 0);
+    g_assert_false(capture.irq_level[0]);
+    g_assert_cmpuint(capture.irq_status[1], ==, MINI_NAND_IRQ_COMPLETE);
+    g_assert_cmpuint(capture.irq_enable[1], ==, MINI_NAND_IRQ_VALID_MASK);
+    g_assert_true(capture.irq_level[1]);
+    g_assert_cmpuint(capture.irq_status[2], ==, 0);
+    g_assert_cmpuint(capture.irq_enable[2], ==, MINI_NAND_IRQ_VALID_MASK);
+    g_assert_false(capture.irq_level[2]);
+    g_assert_cmpuint(capture.irq_status[3], ==, 0);
+    g_assert_cmpuint(capture.irq_enable[3], ==, 0);
+    g_assert_false(capture.irq_level[3]);
+
+    g_assert_cmpuint(adapter_read(&adapter, MINI_NAND_REG_STATUS), ==,
+                     MINI_NAND_STATUS_IDLE);
+    g_assert_cmpuint(adapter_read(&adapter, MINI_NAND_REG_ERROR_CODE), ==,
+                     MINI_NAND_ERR_NONE);
+    g_assert_cmpuint(adapter_read(&adapter, MINI_NAND_REG_READ_COUNT), ==, 0);
+    g_assert_false(core.result_valid);
+    g_assert_cmpuint(adapter_read(&adapter, MINI_NAND_REG_COMMAND), ==, 0);
+    g_assert_cmpuint(adapter_read(&adapter, MINI_NAND_REG_IRQ_STATUS), ==, 0);
+    g_assert_cmpuint(adapter_read(&adapter, 0x30), ==, 0);
+
+    assert_rejected_write_preserves_core(&adapter, &core,
+                                         MINI_NAND_REG_VERSION);
+    assert_rejected_write_preserves_core(&adapter, &core,
+                                         MINI_NAND_REG_STATUS);
+    assert_rejected_write_preserves_core(&adapter, &core, 0x30);
+    g_assert_cmpuint(capture.calls, ==, 4);
+}
+
+static void test_null_callback_delegates_successful_read(void)
+{
+    MiniNandCore core;
+    MiniNandMmioAdapter adapter;
+
+    mini_nand_core_init(&core, mini_nand_flash_read,
+                        test_dma_write, &core,
+                        (MiniNandFaultConfig){ .fail_nth = 0 });
+    mini_nand_mmio_adapter_init(&adapter, &core, NULL, NULL);
+    adapter_write(&adapter, MINI_NAND_REG_PAGE, 42);
+    adapter_write(&adapter, MINI_NAND_REG_DMA_ADDR_LO, 0x81000000);
+    adapter_write(&adapter, MINI_NAND_REG_LENGTH, MINI_NAND_FLASH_PAGE_SIZE);
+    adapter_write(&adapter, MINI_NAND_REG_COMMAND, MINI_NAND_CMD_READ);
+
+    g_assert_cmpuint(adapter_read(&adapter, MINI_NAND_REG_STATUS), ==,
+                     MINI_NAND_STATUS_DONE);
+    g_assert_cmpuint(adapter_read(&adapter, MINI_NAND_REG_ERROR_CODE), ==,
+                     MINI_NAND_ERR_NONE);
+    g_assert_cmpuint(adapter_read(&adapter, MINI_NAND_REG_READ_COUNT), ==, 1);
+    g_assert_true(core.result_valid);
+    g_assert_cmpuint(adapter_read(&adapter, MINI_NAND_REG_IRQ_STATUS), ==,
+                     MINI_NAND_IRQ_COMPLETE);
 }
 
 static void exercise_log_contract(void)
 {
     MiniNandCore core;
+    MiniNandMmioAdapter adapter;
 
     mini_nand_core_init(&core, mini_nand_flash_read,
                         test_dma_write, &core,
                         (MiniNandFaultConfig){ .fail_nth = 0 });
-    adapter_write(&core, MINI_NAND_REG_PAGE, 42);
-    adapter_read(&core, MINI_NAND_REG_VERSION);
-    adapter_read(&core, MINI_NAND_REG_COMMAND);
-    adapter_read(&core, MINI_NAND_REG_PAGE);
-    adapter_read(&core, MINI_NAND_REG_IRQ_STATUS);
-    adapter_read(&core, 0x30);
-    adapter_write(&core, MINI_NAND_REG_VERSION, 1);
-    adapter_write(&core, MINI_NAND_REG_IRQ_STATUS, 1);
-    adapter_write(&core, 0x30, 1);
+    mini_nand_mmio_adapter_init(&adapter, &core, NULL, NULL);
+    adapter_write(&adapter, MINI_NAND_REG_PAGE, 42);
+    adapter_read(&adapter, MINI_NAND_REG_VERSION);
+    adapter_read(&adapter, MINI_NAND_REG_COMMAND);
+    adapter_read(&adapter, MINI_NAND_REG_PAGE);
+    adapter_read(&adapter, MINI_NAND_REG_IRQ_STATUS);
+    adapter_read(&adapter, 0x30);
+    adapter_write(&adapter, MINI_NAND_REG_VERSION, 1);
+    adapter_write(&adapter, MINI_NAND_REG_IRQ_STATUS, 1);
+    adapter_write(&adapter, 0x30, 1);
 }
 
 static void save_error_message(LogCapture *capture, const char *message)
@@ -282,7 +352,6 @@ static void test_rejected_write_logging_contract(void)
 {
     static const char expected_guest_log[] =
         "mini-nand-mmio: rejected write offset=0x0 class=read-only\n"
-        "mini-nand-mmio: rejected write offset=0x28 class=reserved\n"
         "mini-nand-mmio: rejected write offset=0x30 class=undefined\n";
     LogCapture guest = capture_adapter_log(LOG_GUEST_ERROR);
     LogCapture unimp = capture_adapter_log(LOG_UNIMP);
@@ -357,6 +426,8 @@ int main(int argc, char **argv)
                     test_descriptor_contract);
     g_test_add_func("/mini-nand-ctrl/callbacks",
                     test_callbacks_delegate_and_preserve_rejected_writes);
+    g_test_add_func("/mini-nand-ctrl/null-callback",
+                    test_null_callback_delegates_successful_read);
     g_test_add_func("/mini-nand-ctrl/logging",
                     test_rejected_write_logging_contract);
     g_test_add_func("/mini-nand-ctrl/range",

@@ -1520,7 +1520,8 @@ static void virt_machine_done(Notifier *notifier, void *data)
     }
 }
 
-static void virt_create_mini_nand(RISCVVirtState *s)
+static void virt_create_mini_nand(RISCVVirtState *s,
+                                  DeviceState *mmio_irqchip)
 {
     DeviceState *dev;
 
@@ -1541,9 +1542,18 @@ static void virt_create_mini_nand(RISCVVirtState *s)
 
     dev = qdev_new(TYPE_MINI_NAND_CTRL);
     qdev_prop_set_uint32(dev, "fail-nth", s->mini_nand_fail_nth);
+    /*
+     * Machine CLI property "mini-nand"와 QOM child namespace가 충돌하지 않도록
+     * stable child 이름은 "mini-nand-ctrl"로 분리한다.
+     */
+    object_property_add_child(OBJECT(s), "mini-nand-ctrl", OBJECT(dev));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0,
                     s->memmap[VIRT_MINI_NAND].base);
+    /* Board만 RISC-V interrupt-controller source 정책을 소유한다. */
+    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0,
+                       qdev_get_gpio_in(mmio_irqchip,
+                                        VIRT_MINI_NAND_IRQ));
 }
 
 static void virt_machine_init(MachineState *machine)
@@ -1566,6 +1576,11 @@ static void virt_machine_init(MachineState *machine)
 
     if (!virt_aclint_allowed() && s->have_aclint) {
         error_report("'aclint' is only available with TCG acceleration");
+        exit(1);
+    }
+
+    if (s->mini_nand && s->aia_type != VIRT_AIA_TYPE_NONE) {
+        error_report("mini-nand requires aia=none");
         exit(1);
     }
 
@@ -1711,7 +1726,7 @@ static void virt_machine_init(MachineState *machine)
     /* SiFive Test MMIO device */
     sifive_test_create(s->memmap[VIRT_TEST].base);
 
-    virt_create_mini_nand(s);
+    virt_create_mini_nand(s, mmio_irqchip);
 
     /* VirtIO MMIO devices */
     for (i = 0; i < VIRTIO_COUNT; i++) {

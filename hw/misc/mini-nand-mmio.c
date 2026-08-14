@@ -5,6 +5,16 @@
 #include "qemu/range.h"
 #include "system/dma.h"
 
+void mini_nand_mmio_adapter_init(MiniNandMmioAdapter *adapter,
+                                 MiniNandCore *core,
+                                 MiniNandMmioPostWriteFn post_write,
+                                 void *post_write_opaque)
+{
+    adapter->core = core;
+    adapter->post_write = post_write;
+    adapter->post_write_opaque = post_write_opaque;
+}
+
 bool mini_nand_mmio_dma_write(void *opaque,
                               uint64_t address,
                               const uint8_t *source,
@@ -34,19 +44,19 @@ static const char *mini_nand_access_class(MiniNandAccessResult result)
 static uint64_t mini_nand_mmio_read(void *opaque, hwaddr offset,
                                     unsigned size)
 {
-    MiniNandCore *core = opaque;
+    MiniNandMmioAdapter *adapter = opaque;
     MiniNandAccessResult result;
 
-    return mini_nand_core_read(core, offset, &result);
+    return mini_nand_core_read(adapter->core, offset, &result);
 }
 
 static void mini_nand_mmio_write(void *opaque, hwaddr offset,
                                  uint64_t value, unsigned size)
 {
-    MiniNandCore *core = opaque;
+    MiniNandMmioAdapter *adapter = opaque;
     MiniNandAccessResult result;
 
-    result = mini_nand_core_write(core, offset, value);
+    result = mini_nand_core_write(adapter->core, offset, value);
     if (result != MINI_NAND_ACCESS_OK) {
         /*
          * register policy의 trace는 MMIO 경계가 소유한다.
@@ -58,6 +68,15 @@ static void mini_nand_mmio_write(void *opaque, hwaddr offset,
                       ": rejected write offset=0x%" HWADDR_PRIx
                       " class=%s\n",
                       offset, mini_nand_access_class(result));
+        return;
+    }
+
+    /*
+     * Adapter는 IRQ에 영향을 주는 register 목록을 복제하지 않는다.
+     * 성공한 모든 write 뒤 generic callback으로 상위 계층이 상태를 재평가한다.
+     */
+    if (adapter->post_write) {
+        adapter->post_write(adapter->post_write_opaque);
     }
 }
 

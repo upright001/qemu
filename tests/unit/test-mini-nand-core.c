@@ -14,6 +14,8 @@ typedef struct CoreSnapshot {
     uint32_t error_code;
     uint32_t read_count;
     uint32_t fault_count;
+    uint32_t irq_status;
+    uint32_t irq_enable;
     MiniNandFaultPolicy fault_policy;
     bool result_valid;
     uint8_t page_buffer[MINI_NAND_FLASH_PAGE_SIZE];
@@ -27,6 +29,7 @@ static size_t spy_length;
 static uint32_t spy_read_count_before;
 static uint32_t spy_sequence_before;
 static uint32_t spy_fault_count_before;
+static uint32_t spy_irq_status_before;
 static char spy_events[3];
 static bool spy_dma_result;
 static uint64_t spy_expected_dma_address;
@@ -47,6 +50,7 @@ static MiniNandFlashResult spy_flash_read(MiniNandFlash *flash,
     g_assert_cmpuint(spy_core->fault_policy.eligible_read_sequence, ==,
                      spy_sequence_before + 1);
     g_assert_cmpuint(spy_core->fault_count, ==, spy_fault_count_before);
+    g_assert_cmpuint(spy_core->irq_status, ==, spy_irq_status_before);
     spy_events[spy_flash_calls + spy_dma_calls] = 'F';
     spy_flash_calls++;
     spy_page = page;
@@ -66,6 +70,7 @@ static bool spy_dma_write(void *opaque, uint64_t address,
     g_assert_cmpuint(spy_core->fault_policy.eligible_read_sequence, ==,
                      spy_sequence_before + 1);
     g_assert_cmpuint(spy_core->fault_count, ==, spy_fault_count_before);
+    g_assert_cmpuint(spy_core->irq_status, ==, spy_irq_status_before);
     g_assert_cmphex(address, ==, spy_expected_dma_address);
     g_assert_cmpuint(length, ==, MINI_NAND_FLASH_PAGE_SIZE);
     assert_page_pattern(spy_core->page, source);
@@ -84,6 +89,7 @@ static void spy_reset(MiniNandCore *core)
     spy_read_count_before = core->read_count;
     spy_sequence_before = core->fault_policy.eligible_read_sequence;
     spy_fault_count_before = core->fault_count;
+    spy_irq_status_before = core->irq_status;
     memset(spy_events, 0, sizeof(spy_events));
     spy_dma_result = true;
     spy_expected_dma_address = UINT64_C(0x0000000081000000);
@@ -104,6 +110,8 @@ static CoreSnapshot snapshot(const MiniNandCore *core)
         .error_code = core->error_code,
         .read_count = core->read_count,
         .fault_count = core->fault_count,
+        .irq_status = core->irq_status,
+        .irq_enable = core->irq_enable,
         .fault_policy = core->fault_policy,
         .result_valid = core->result_valid,
     };
@@ -128,6 +136,8 @@ static void assert_snapshot_equal(const CoreSnapshot *actual,
     g_assert_cmpuint(actual->error_code, ==, expected->error_code);
     g_assert_cmpuint(actual->read_count, ==, expected->read_count);
     g_assert_cmpuint(actual->fault_count, ==, expected->fault_count);
+    g_assert_cmpuint(actual->irq_status, ==, expected->irq_status);
+    g_assert_cmpuint(actual->irq_enable, ==, expected->irq_enable);
     g_assert_cmpuint(actual->fault_policy.config.fail_nth, ==,
                      expected->fault_policy.config.fail_nth);
     g_assert_cmpuint(actual->fault_policy.eligible_read_sequence, ==,
@@ -151,6 +161,9 @@ static void assert_reset_snapshot(const MiniNandCore *core)
     g_assert_cmpuint(core->error_code, ==, MINI_NAND_ERR_NONE);
     g_assert_cmpuint(core->read_count, ==, 0);
     g_assert_cmpuint(core->fault_count, ==, 0);
+    g_assert_cmpuint(core->irq_status, ==, 0);
+    g_assert_cmpuint(core->irq_enable, ==, 0);
+    g_assert_false(mini_nand_core_irq_level(core));
     g_assert_false(core->result_valid);
     g_assert_cmpmem(core->page_buffer, sizeof(core->page_buffer),
                     zeros, sizeof(zeros));
@@ -221,6 +234,7 @@ static void test_dma_success_order_address(void)
     g_assert_cmpstr(spy_events, ==, "FD");
     g_assert_cmpuint(core.status, ==, MINI_NAND_STATUS_DONE);
     g_assert_cmpuint(core.error_code, ==, MINI_NAND_ERR_NONE);
+    g_assert_cmpuint(core.irq_status, ==, MINI_NAND_IRQ_COMPLETE);
     g_assert_true(core.result_valid);
     assert_page_pattern(42, core.page_buffer);
 }
@@ -322,6 +336,7 @@ static void test_dma_transaction_failure(void)
     g_assert_cmpuint(core.read_count, ==, 1);
     g_assert_cmpuint(core.status, ==, MINI_NAND_STATUS_ERROR);
     g_assert_cmpuint(core.error_code, ==, MINI_NAND_ERR_DMA);
+    g_assert_cmpuint(core.irq_status, ==, MINI_NAND_IRQ_ERROR);
     g_assert_false(core.result_valid);
     assert_page_pattern(42, core.page_buffer);
 }
@@ -396,10 +411,6 @@ static void test_register_dispositions(void)
         MINI_NAND_REG_READ_COUNT,
         MINI_NAND_REG_FAULT_COUNT,
     };
-    static const uint32_t reserved[] = {
-        MINI_NAND_REG_IRQ_STATUS,
-        MINI_NAND_REG_IRQ_ENABLE,
-    };
     MiniNandCore core;
     CoreSnapshot before;
     CoreSnapshot after;
@@ -442,21 +453,83 @@ static void test_register_dispositions(void)
         after = snapshot(&core);
         assert_snapshot_equal(&after, &before);
     }
-    for (size_t index = 0; index < G_N_ELEMENTS(reserved); index++) {
-        g_assert_cmpint(mini_nand_core_write(&core, reserved[index], 1),
-                        ==, MINI_NAND_ACCESS_RESERVED);
-        after = snapshot(&core);
-        assert_snapshot_equal(&after, &before);
-        g_assert_cmpuint(mini_nand_core_read(&core, reserved[index], &result),
-                         ==, 0);
-        g_assert_cmpint(result, ==, MINI_NAND_ACCESS_RESERVED);
-    }
     g_assert_cmpint(mini_nand_core_write(&core, 0x30, 1),
                     ==, MINI_NAND_ACCESS_UNDEFINED);
     after = snapshot(&core);
     assert_snapshot_equal(&after, &before);
     g_assert_cmpuint(mini_nand_core_read(&core, 0x30, &result), ==, 0);
     g_assert_cmpint(result, ==, MINI_NAND_ACCESS_UNDEFINED);
+}
+
+static void test_irq_reset_mask_and_late_enable(void)
+{
+    MiniNandCore core;
+
+    mini_nand_core_init(&core, spy_flash_read, spy_dma_write, &core,
+                        (MiniNandFaultConfig){ .fail_nth = 0 });
+    assert_reset_snapshot(&core);
+    configure_valid_read(&core, 42);
+    spy_reset(&core);
+    submit_read(&core);
+
+    g_assert_cmpuint(core_read(&core, MINI_NAND_REG_IRQ_STATUS), ==,
+                     MINI_NAND_IRQ_COMPLETE);
+    g_assert_cmpuint(core_read(&core, MINI_NAND_REG_IRQ_ENABLE), ==, 0);
+    g_assert_false(mini_nand_core_irq_level(&core));
+
+    g_assert_cmpint(mini_nand_core_write(&core, MINI_NAND_REG_IRQ_ENABLE,
+                                         UINT32_MAX),
+                    ==, MINI_NAND_ACCESS_OK);
+    g_assert_cmpuint(core_read(&core, MINI_NAND_REG_IRQ_ENABLE), ==,
+                     MINI_NAND_IRQ_VALID_MASK);
+    g_assert_true(mini_nand_core_irq_level(&core));
+
+    g_assert_cmpint(mini_nand_core_write(&core, MINI_NAND_REG_IRQ_ENABLE, 0),
+                    ==, MINI_NAND_ACCESS_OK);
+    g_assert_cmpuint(core_read(&core, MINI_NAND_REG_IRQ_STATUS), ==,
+                     MINI_NAND_IRQ_COMPLETE);
+    g_assert_false(mini_nand_core_irq_level(&core));
+
+    mini_nand_core_reset(&core);
+    assert_reset_snapshot(&core);
+}
+
+static void test_irq_sticky_selective_w1c_isolation(void)
+{
+    MiniNandCore core;
+    CoreSnapshot expected;
+    CoreSnapshot actual;
+
+    mini_nand_core_init(&core, spy_flash_read, spy_dma_write, &core,
+                        (MiniNandFaultConfig){ .fail_nth = 0 });
+    configure_valid_read(&core, 42);
+    spy_reset(&core);
+    submit_read(&core);
+
+    spy_reset(&core);
+    spy_dma_result = false;
+    submit_read(&core);
+    g_assert_cmpuint(core_read(&core, MINI_NAND_REG_IRQ_STATUS), ==,
+                     MINI_NAND_IRQ_VALID_MASK);
+    g_assert_cmpint(mini_nand_core_write(&core, MINI_NAND_REG_IRQ_ENABLE,
+                                         MINI_NAND_IRQ_VALID_MASK),
+                    ==, MINI_NAND_ACCESS_OK);
+    g_assert_true(mini_nand_core_irq_level(&core));
+
+    expected = snapshot(&core);
+    expected.irq_status = MINI_NAND_IRQ_ERROR;
+    g_assert_cmpint(mini_nand_core_write(&core, MINI_NAND_REG_IRQ_STATUS,
+                                         MINI_NAND_IRQ_COMPLETE | (1U << 31)),
+                    ==, MINI_NAND_ACCESS_OK);
+    actual = snapshot(&core);
+    assert_snapshot_equal(&actual, &expected);
+    g_assert_true(mini_nand_core_irq_level(&core));
+
+    g_assert_cmpint(mini_nand_core_write(&core, MINI_NAND_REG_IRQ_STATUS,
+                                         MINI_NAND_IRQ_ERROR),
+                    ==, MINI_NAND_ACCESS_OK);
+    g_assert_cmpuint(core_read(&core, MINI_NAND_REG_IRQ_STATUS), ==, 0);
+    g_assert_false(mini_nand_core_irq_level(&core));
 }
 
 static void test_valid_page_42_read_observes_busy_and_completes(void)
@@ -718,6 +791,10 @@ static void test_fault_rejections_do_not_consume_sequence(void)
     mini_nand_core_init(&core, spy_flash_read, spy_dma_write, &core,
                         (MiniNandFaultConfig){ .fail_nth = 3 });
     memset(core.page_buffer, 0xa5, sizeof(core.page_buffer));
+    core.irq_status = MINI_NAND_IRQ_COMPLETE;
+    g_assert_cmpint(mini_nand_core_write(&core, MINI_NAND_REG_IRQ_ENABLE,
+                                         MINI_NAND_IRQ_COMPLETE),
+                    ==, MINI_NAND_ACCESS_OK);
 
     configure_valid_read(&core, 42);
     assert_rejected_snapshot(&core, 2, MINI_NAND_ERR_INVALID_CMD);
@@ -773,6 +850,7 @@ static void test_third_read_fault_skips_flash_and_dma(void)
     g_assert_cmpuint(core_read(&core, MINI_NAND_REG_FAULT_COUNT), ==, 1);
     g_assert_cmpuint(core.status, ==, MINI_NAND_STATUS_ERROR);
     g_assert_cmpuint(core.error_code, ==, MINI_NAND_ERR_UNCORRECTABLE);
+    g_assert_cmpuint(core.irq_status, ==, MINI_NAND_IRQ_VALID_MASK);
     g_assert_false(core.result_valid);
     g_assert_cmpmem(core.page_buffer, sizeof(core.page_buffer),
                     buffer_before, sizeof(buffer_before));
@@ -892,6 +970,10 @@ int main(int argc, char **argv)
                     test_construction_and_system_reset);
     g_test_add_func("/mini-nand-core/register-dispositions",
                     test_register_dispositions);
+    g_test_add_func("/mini-nand-core/irq-reset-mask-late-enable",
+                    test_irq_reset_mask_and_late_enable);
+    g_test_add_func("/mini-nand-core/irq-sticky-selective-w1c",
+                    test_irq_sticky_selective_w1c_isolation);
     g_test_add_func("/mini-nand-core/valid-page-42-read",
                     test_valid_page_42_read_observes_busy_and_completes);
     g_test_add_func("/mini-nand-core/invalid-command",

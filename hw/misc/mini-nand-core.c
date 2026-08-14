@@ -31,9 +31,20 @@ void mini_nand_core_reset(MiniNandCore *core)
     core->error_code = MINI_NAND_ERR_NONE;
     core->read_count = 0;
     core->fault_count = 0;
+    core->irq_status = 0;
+    core->irq_enable = 0;
     mini_nand_fault_policy_reset(&core->fault_policy);
     core->result_valid = false;
     memset(core->page_buffer, 0, sizeof(core->page_buffer));
+}
+
+bool mini_nand_core_irq_level(const MiniNandCore *core)
+{
+    /*
+     * Core는 line이나 interrupt controller를 알지 않는다.
+     * 외부 adapter가 이 순수 predicate를 사용해 전달 계층을 동기화한다.
+     */
+    return (core->irq_status & core->irq_enable) != 0;
 }
 
 uint32_t mini_nand_core_read(const MiniNandCore *core,
@@ -72,9 +83,11 @@ uint32_t mini_nand_core_read(const MiniNandCore *core,
         *result = MINI_NAND_ACCESS_OK;
         return core->fault_count;
     case MINI_NAND_REG_IRQ_STATUS:
+        *result = MINI_NAND_ACCESS_OK;
+        return core->irq_status & MINI_NAND_IRQ_VALID_MASK;
     case MINI_NAND_REG_IRQ_ENABLE:
-        *result = MINI_NAND_ACCESS_RESERVED;
-        return 0;
+        *result = MINI_NAND_ACCESS_OK;
+        return core->irq_enable & MINI_NAND_IRQ_VALID_MASK;
     default:
         *result = MINI_NAND_ACCESS_UNDEFINED;
         return 0;
@@ -158,6 +171,8 @@ MiniNandAccessResult mini_nand_core_write(MiniNandCore *core,
             core->status = MINI_NAND_STATUS_ERROR;
             core->error_code = MINI_NAND_ERR_UNCORRECTABLE;
             core->fault_count++;
+            /* Terminal 관찰값이 모두 정해진 뒤 ERROR event를 게시한다. */
+            core->irq_status |= MINI_NAND_IRQ_ERROR;
             return MINI_NAND_ACCESS_OK;
         }
         flash_result = core->flash_read(&core->flash, core->page,
@@ -170,10 +185,14 @@ MiniNandAccessResult mini_nand_core_write(MiniNandCore *core,
             core->status = MINI_NAND_STATUS_ERROR;
             core->error_code = MINI_NAND_ERR_DMA;
             core->result_valid = false;
+            /* DMA 실패의 state와 buffer 결과가 settle된 뒤 event를 게시한다. */
+            core->irq_status |= MINI_NAND_IRQ_ERROR;
             return MINI_NAND_ACCESS_OK;
         }
         core->status = MINI_NAND_STATUS_DONE;
         core->result_valid = true;
+        /* DMA 성공 결과가 guest-visible해진 뒤 COMPLETE event를 게시한다. */
+        core->irq_status |= MINI_NAND_IRQ_COMPLETE;
         return MINI_NAND_ACCESS_OK;
     case MINI_NAND_REG_VERSION:
     case MINI_NAND_REG_STATUS:
@@ -182,8 +201,11 @@ MiniNandAccessResult mini_nand_core_write(MiniNandCore *core,
     case MINI_NAND_REG_FAULT_COUNT:
         return MINI_NAND_ACCESS_READ_ONLY;
     case MINI_NAND_REG_IRQ_STATUS:
+        core->irq_status &= ~(value & MINI_NAND_IRQ_VALID_MASK);
+        return MINI_NAND_ACCESS_OK;
     case MINI_NAND_REG_IRQ_ENABLE:
-        return MINI_NAND_ACCESS_RESERVED;
+        core->irq_enable = value & MINI_NAND_IRQ_VALID_MASK;
+        return MINI_NAND_ACCESS_OK;
     default:
         return MINI_NAND_ACCESS_UNDEFINED;
     }

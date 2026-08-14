@@ -11,6 +11,10 @@
 #define MINI_NAND_VERSION          0x00010000U
 #define MINI_NAND_CMD_READ         0x00000001U
 #define MINI_NAND_CMD_RESET        0x000000ffU
+#define MINI_NAND_IRQ_COMPLETE     (1U << 0)
+#define MINI_NAND_IRQ_ERROR        (1U << 1)
+#define MINI_NAND_IRQ_VALID_MASK \
+    (MINI_NAND_IRQ_COMPLETE | MINI_NAND_IRQ_ERROR)
 
 typedef enum MiniNandRegister {
     MINI_NAND_REG_VERSION = 0x00,
@@ -75,6 +79,8 @@ typedef struct MiniNandCore {
     uint32_t error_code;
     uint32_t read_count;
     uint32_t fault_count;
+    uint32_t irq_status;
+    uint32_t irq_enable;
     MiniNandFaultPolicy fault_policy;
     bool result_valid;
     uint8_t page_buffer[MINI_NAND_FLASH_PAGE_SIZE];
@@ -86,6 +92,7 @@ void mini_nand_core_init(MiniNandCore *core,
                          void *dma_opaque,
                          MiniNandFaultConfig fault_config);
 void mini_nand_core_reset(MiniNandCore *core);
+bool mini_nand_core_irq_level(const MiniNandCore *core);
 uint32_t mini_nand_core_read(const MiniNandCore *core,
                              uint32_t offset,
                              MiniNandAccessResult *result);
