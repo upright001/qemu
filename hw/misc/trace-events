@@ -417,3 +417,9 @@ iommu_testdev_dma_read(uint64_t gva, uint32_t len) "gva=0x%" PRIx64 " len=%u"
 iommu_testdev_dma_verify(uint32_t expected, uint32_t actual) "expected=0x%x actual=0x%x"
 iommu_testdev_dma_result(uint32_t result) "DMA completed result=0x%x"
 iommu_testdev_dma_armed(bool armed) "armed=%d"
+
+# mini-nand-mmio.c
+mini_nand_command(uint32_t command, uint32_t page, uint64_t dma_address, uint32_t length) "command=0x%08" PRIx32 " page=0x%08" PRIx32 " dma_address=0x%016" PRIx64 " length=0x%08" PRIx32
+mini_nand_completion(uint32_t page, uint32_t status, uint32_t read_count, uint32_t fault_count, uint32_t irq_status) "page=0x%08" PRIx32 " status=0x%08" PRIx32 " read_count=0x%08" PRIx32 " fault_count=0x%08" PRIx32 " irq_status=0x%08" PRIx32
+mini_nand_error(uint32_t page, uint32_t error_code, bool operation_started, uint32_t read_count, uint32_t fault_count, uint32_t irq_status) "page=0x%08" PRIx32 " error_code=0x%08" PRIx32 " operation_started=%d read_count=0x%08" PRIx32 " fault_count=0x%08" PRIx32 " irq_status=0x%08" PRIx32
+mini_nand_fault(uint32_t page, uint32_t eligible_sequence, uint32_t read_count, uint32_t fault_count) "page=0x%08" PRIx32 " eligible_sequence=0x%08" PRIx32 " read_count=0x%08" PRIx32 " fault_count=0x%08" PRIx32
