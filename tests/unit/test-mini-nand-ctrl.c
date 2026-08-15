@@ -23,10 +23,21 @@ static AddressSpaceRwCapture dma_capture;
 typedef struct PostWriteCapture {
     MiniNandCore *core;
     unsigned int calls;
-    uint32_t irq_status[4];
-    uint32_t irq_enable[4];
-    bool irq_level[4];
+    uint32_t irq_status[16];
+    uint32_t irq_enable[16];
+    bool irq_level[16];
 } PostWriteCapture;
+
+typedef struct FaultObserverCapture {
+    MiniNandCore *core;
+    PostWriteCapture *post_write;
+    unsigned int expected_post_writes;
+    unsigned int calls;
+    uint32_t command;
+    uint32_t page;
+    uint32_t sequence;
+    uint32_t error;
+} FaultObserverCapture;
 
 MemTxResult address_space_rw(AddressSpace *as, hwaddr addr,
                              MemTxAttrs attrs, void *buf,
@@ -62,6 +73,16 @@ static bool test_dma_write(void *opaque, uint64_t address,
     return true;
 }
 
+static bool test_dma_fail(void *opaque, uint64_t address,
+                          const uint8_t *source, size_t length)
+{
+    (void)opaque;
+    (void)address;
+    (void)source;
+    (void)length;
+    return false;
+}
+
 static void capture_post_write(void *opaque)
 {
     PostWriteCapture *capture = opaque;
@@ -72,6 +93,28 @@ static void capture_post_write(void *opaque)
     capture->irq_enable[index] = capture->core->irq_enable;
     capture->irq_level[index] = mini_nand_core_irq_level(capture->core);
     capture->calls++;
+}
+
+static void capture_fault_observer(void *opaque, uint32_t command,
+                                   uint32_t page, uint32_t sequence,
+                                   uint32_t error)
+{
+    FaultObserverCapture *capture = opaque;
+
+    /* Event는 post-write IRQ 동기화 이후의 settled terminal state만 본다. */
+    g_assert_cmpuint(capture->post_write->calls, ==,
+                     capture->expected_post_writes);
+    g_assert_cmpuint(capture->core->status, ==, MINI_NAND_STATUS_ERROR);
+    g_assert_cmpuint(capture->core->error_code, ==, MINI_NAND_ERR_UNCORRECTABLE);
+    g_assert_true(capture->core->irq_status & MINI_NAND_IRQ_ERROR);
+    g_assert_cmpuint(capture->post_write->irq_status[
+                         capture->expected_post_writes - 1], ==,
+                     capture->core->irq_status);
+    capture->calls++;
+    capture->command = command;
+    capture->page = page;
+    capture->sequence = sequence;
+    capture->error = error;
 }
 
 static void assert_dma_capture(AddressSpace *address_space,
@@ -247,6 +290,80 @@ static void test_null_callback_delegates_successful_read(void)
     g_assert_true(core.result_valid);
     g_assert_cmpuint(adapter_read(&adapter, MINI_NAND_REG_IRQ_STATUS), ==,
                      MINI_NAND_IRQ_COMPLETE);
+}
+
+static void test_fault_observer_reports_only_settled_injected_fault(void)
+{
+    MiniNandCore core;
+    MiniNandMmioAdapter adapter;
+    PostWriteCapture post_write = { .core = &core };
+    FaultObserverCapture observer = {
+        .core = &core,
+        .post_write = &post_write,
+        .expected_post_writes = 3,
+    };
+
+    mini_nand_core_init(&core, mini_nand_flash_read, test_dma_write, &core,
+                        (MiniNandFaultConfig){ .fail_nth = 3 });
+    mini_nand_mmio_adapter_init(&adapter, &core, NULL, NULL);
+    adapter_write(&adapter, MINI_NAND_REG_PAGE, 42);
+    adapter_write(&adapter, MINI_NAND_REG_DMA_ADDR_LO, 0x81000000);
+    adapter_write(&adapter, MINI_NAND_REG_DMA_ADDR_HI, 0);
+    adapter_write(&adapter, MINI_NAND_REG_LENGTH, MINI_NAND_FLASH_PAGE_SIZE);
+    mini_nand_mmio_adapter_init(&adapter, &core, capture_post_write, &post_write);
+    mini_nand_mmio_set_fault_observer(&adapter, capture_fault_observer,
+                                      &observer);
+    adapter_write(&adapter, MINI_NAND_REG_COMMAND, MINI_NAND_CMD_READ);
+    adapter_write(&adapter, MINI_NAND_REG_COMMAND, MINI_NAND_CMD_READ);
+    g_assert_cmpuint(observer.calls, ==, 0);
+    adapter_write(&adapter, MINI_NAND_REG_COMMAND, MINI_NAND_CMD_READ);
+    g_assert_cmpuint(observer.calls, ==, 1);
+    g_assert_cmpuint(observer.command, ==, MINI_NAND_CMD_READ);
+    g_assert_cmpuint(observer.page, ==, 42);
+    g_assert_cmpuint(observer.sequence, ==, 3);
+    g_assert_cmpuint(observer.error, ==, MINI_NAND_ERR_UNCORRECTABLE);
+    adapter_write(&adapter, MINI_NAND_REG_STATUS, 0);
+    g_assert_cmpuint(observer.calls, ==, 1);
+    adapter_write(&adapter, MINI_NAND_REG_COMMAND, MINI_NAND_CMD_RESET);
+    g_assert_cmpuint(observer.calls, ==, 1);
+}
+
+static void test_fault_observer_skips_dma_and_counter_reset_wrap(void)
+{
+    MiniNandCore core;
+    MiniNandMmioAdapter adapter;
+    PostWriteCapture post_write = { .core = &core };
+    FaultObserverCapture observer = {
+        .core = &core,
+        .post_write = &post_write,
+        .expected_post_writes = 8,
+    };
+
+    mini_nand_core_init(&core, mini_nand_flash_read, test_dma_fail, &core,
+                        (MiniNandFaultConfig){ .fail_nth = 3 });
+    mini_nand_mmio_adapter_init(&adapter, &core, NULL, NULL);
+    adapter_write(&adapter, MINI_NAND_REG_PAGE, 42);
+    adapter_write(&adapter, MINI_NAND_REG_DMA_ADDR_LO, 0x81000000);
+    adapter_write(&adapter, MINI_NAND_REG_LENGTH, MINI_NAND_FLASH_PAGE_SIZE);
+    mini_nand_mmio_adapter_init(&adapter, &core, capture_post_write, &post_write);
+    mini_nand_mmio_set_fault_observer(&adapter, capture_fault_observer, &observer);
+    adapter_write(&adapter, MINI_NAND_REG_COMMAND, MINI_NAND_CMD_READ);
+    g_assert_cmpuint(observer.calls, ==, 0);
+    core.fault_count = UINT32_MAX;
+    adapter_write(&adapter, MINI_NAND_REG_COMMAND, MINI_NAND_CMD_RESET);
+    g_assert_cmpuint(core.fault_count, ==, 0);
+    g_assert_cmpuint(observer.calls, ==, 0);
+
+    core.dma_write = test_dma_write;
+    adapter_write(&adapter, MINI_NAND_REG_PAGE, 42);
+    adapter_write(&adapter, MINI_NAND_REG_DMA_ADDR_LO, 0x81000000);
+    adapter_write(&adapter, MINI_NAND_REG_LENGTH, MINI_NAND_FLASH_PAGE_SIZE);
+    core.fault_count = UINT32_MAX;
+    adapter_write(&adapter, MINI_NAND_REG_COMMAND, MINI_NAND_CMD_READ);
+    adapter_write(&adapter, MINI_NAND_REG_COMMAND, MINI_NAND_CMD_READ);
+    adapter_write(&adapter, MINI_NAND_REG_COMMAND, MINI_NAND_CMD_READ);
+    g_assert_cmpuint(core.fault_count, ==, 0);
+    g_assert_cmpuint(observer.calls, ==, 1);
 }
 
 static void exercise_log_contract(void)
@@ -428,6 +545,10 @@ int main(int argc, char **argv)
                     test_callbacks_delegate_and_preserve_rejected_writes);
     g_test_add_func("/mini-nand-ctrl/null-callback",
                     test_null_callback_delegates_successful_read);
+    g_test_add_func("/mini-nand-ctrl/fault-observer",
+                    test_fault_observer_reports_only_settled_injected_fault);
+    g_test_add_func("/mini-nand-ctrl/fault-observer-wrap",
+                    test_fault_observer_skips_dma_and_counter_reset_wrap);
     g_test_add_func("/mini-nand-ctrl/logging",
                     test_rejected_write_logging_contract);
     g_test_add_func("/mini-nand-ctrl/range",

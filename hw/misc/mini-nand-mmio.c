@@ -14,6 +14,16 @@ void mini_nand_mmio_adapter_init(MiniNandMmioAdapter *adapter,
     adapter->core = core;
     adapter->post_write = post_write;
     adapter->post_write_opaque = post_write_opaque;
+    adapter->fault_observer = NULL;
+    adapter->fault_observer_opaque = NULL;
+}
+
+void mini_nand_mmio_set_fault_observer(MiniNandMmioAdapter *adapter,
+                                       MiniNandMmioFaultObserver observer,
+                                       void *opaque)
+{
+    adapter->fault_observer = observer;
+    adapter->fault_observer_opaque = opaque;
 }
 
 bool mini_nand_mmio_dma_write(void *opaque,
@@ -63,9 +73,12 @@ static void mini_nand_mmio_write(void *opaque, hwaddr offset,
     uint32_t request_length = 0;
     uint32_t previous_read_count = 0;
     uint32_t previous_fault_count = 0;
+    MiniNandCoreSnapshot before;
+    MiniNandCoreSnapshot after;
     bool is_command = offset == MINI_NAND_REG_COMMAND;
 
     if (is_command) {
+        before = mini_nand_core_snapshot(core);
         request_page = core->page;
         request_dma_address = ((uint64_t)core->dma_addr_hi << 32) |
                               core->dma_addr_lo;
@@ -121,6 +134,20 @@ static void mini_nand_mmio_write(void *opaque, hwaddr offset,
      */
     if (adapter->post_write) {
         adapter->post_write(adapter->post_write_opaque);
+    }
+    if (is_command) {
+        after = mini_nand_core_snapshot(core);
+        /* IRQ sync 뒤의 좁은 predicate만 once fault event를 외부로 보낸다. */
+        if (adapter->fault_observer && command == MINI_NAND_CMD_READ &&
+            !before.fault.fired && after.fault.fired && after.fault.enabled &&
+            after.fault.once &&
+            after.fault.eligible_sequence == after.fault.nth &&
+            after.error_code == MINI_NAND_ERR_UNCORRECTABLE &&
+            (uint32_t)(after.fault_count - before.fault_count) == 1U) {
+            adapter->fault_observer(adapter->fault_observer_opaque, command,
+                                    request_page, after.fault.eligible_sequence,
+                                    after.error_code);
+        }
     }
 }
 

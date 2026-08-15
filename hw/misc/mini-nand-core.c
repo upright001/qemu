@@ -47,6 +47,29 @@ bool mini_nand_core_irq_level(const MiniNandCore *core)
     return (core->irq_status & core->irq_enable) != 0;
 }
 
+void mini_nand_core_configure_fault_once(MiniNandCore *core, uint32_t nth)
+{
+    mini_nand_fault_policy_configure_once(&core->fault_policy, nth);
+}
+
+void mini_nand_core_clear_fault(MiniNandCore *core)
+{
+    mini_nand_fault_policy_clear(&core->fault_policy);
+}
+
+MiniNandCoreSnapshot mini_nand_core_snapshot(const MiniNandCore *core)
+{
+    return (MiniNandCoreSnapshot) {
+        .fault = mini_nand_fault_policy_snapshot(&core->fault_policy),
+        .status = core->status,
+        .error_code = core->error_code,
+        .read_count = core->read_count,
+        .fault_count = core->fault_count,
+        .irq_status = core->irq_status,
+        .irq_enable = core->irq_enable,
+    };
+}
+
 uint32_t mini_nand_core_read(const MiniNandCore *core,
                              uint32_t offset,
                              MiniNandAccessResult *result)

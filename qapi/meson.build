@@ -40,6 +40,7 @@ qapi_all_modules = [
   'machine-common',
   'machine',
   'machine-s390x',
+  'mini-nand',
   'migration',
   'misc',
   'net',

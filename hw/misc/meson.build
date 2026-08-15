@@ -33,6 +33,7 @@ system_ss.add(when: 'CONFIG_MINI_NAND_CTRL', if_true: files(
   'mini-nand-core.c',
   'mini-nand-mmio.c',
   'mini-nand-ctrl.c',
+  'mini-nand-qmp.c',
 ))
 system_ss.add(when: 'CONFIG_MCHP_PFSOC_DMC', if_true: files('mchp_pfsoc_dmc.c'))
 system_ss.add(when: 'CONFIG_MCHP_PFSOC_IOSCB', if_true: files('mchp_pfsoc_ioscb.c'))

@@ -16,9 +16,22 @@ typedef struct MiniNandFaultPolicy {
     bool fired;
 } MiniNandFaultPolicy;
 
+typedef struct MiniNandFaultPolicySnapshot {
+    bool enabled;
+    uint32_t nth;
+    bool once;
+    uint32_t eligible_sequence;
+    bool fired;
+} MiniNandFaultPolicySnapshot;
+
 void mini_nand_fault_policy_init(MiniNandFaultPolicy *policy,
                                  MiniNandFaultConfig config);
 void mini_nand_fault_policy_reset(MiniNandFaultPolicy *policy);
 bool mini_nand_fault_policy_evaluate_read(MiniNandFaultPolicy *policy);
+void mini_nand_fault_policy_configure_once(MiniNandFaultPolicy *policy,
+                                           uint32_t nth);
+void mini_nand_fault_policy_clear(MiniNandFaultPolicy *policy);
+MiniNandFaultPolicySnapshot mini_nand_fault_policy_snapshot(
+    const MiniNandFaultPolicy *policy);
 
 #endif

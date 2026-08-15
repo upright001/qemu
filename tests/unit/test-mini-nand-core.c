@@ -943,6 +943,46 @@ static void test_command_and_system_reset_rearm_fault(void)
     assert_third_read_fault(&command_core);
 }
 
+static void test_qmp_fault_control_preserves_unrelated_snapshot(void)
+{
+    MiniNandCore core;
+    MiniNandCoreSnapshot before;
+    MiniNandCoreSnapshot after;
+
+    mini_nand_core_init(&core, spy_flash_read, spy_dma_write, &core,
+                        (MiniNandFaultConfig){ .fail_nth = 3 });
+    core.status = MINI_NAND_STATUS_DONE;
+    core.error_code = MINI_NAND_ERR_NONE;
+    core.read_count = 7;
+    core.fault_count = 2;
+    core.irq_status = MINI_NAND_IRQ_COMPLETE;
+    core.irq_enable = MINI_NAND_IRQ_VALID_MASK;
+    mini_nand_fault_policy_evaluate_read(&core.fault_policy);
+    before = mini_nand_core_snapshot(&core);
+
+    mini_nand_core_configure_fault_once(&core, 2);
+    after = mini_nand_core_snapshot(&core);
+    g_assert_true(after.fault.enabled);
+    g_assert_cmpuint(after.fault.nth, ==, 2);
+    g_assert_cmpuint(after.fault.eligible_sequence, ==, 0);
+    g_assert_false(after.fault.fired);
+    g_assert_cmpuint(after.status, ==, before.status);
+    g_assert_cmpuint(after.error_code, ==, before.error_code);
+    g_assert_cmpuint(after.read_count, ==, before.read_count);
+    g_assert_cmpuint(after.fault_count, ==, before.fault_count);
+    g_assert_cmpuint(after.irq_status, ==, before.irq_status);
+    g_assert_cmpuint(after.irq_enable, ==, before.irq_enable);
+
+    mini_nand_core_clear_fault(&core);
+    after = mini_nand_core_snapshot(&core);
+    g_assert_false(after.fault.enabled);
+    g_assert_cmpuint(after.fault.nth, ==, 0);
+    g_assert_cmpuint(after.fault.eligible_sequence, ==, 0);
+    g_assert_false(after.fault.fired);
+    g_assert_cmpuint(after.read_count, ==, before.read_count);
+    g_assert_cmpuint(after.fault_count, ==, before.fault_count);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -954,6 +994,8 @@ int main(int argc, char **argv)
                     test_nonmatching_dma_failure_consumes_sequence);
     g_test_add_func("/mini-nand-core/fault-reset-rearm",
                     test_command_and_system_reset_rearm_fault);
+    g_test_add_func("/mini-nand-core/qmp-control-snapshot",
+                    test_qmp_fault_control_preserves_unrelated_snapshot);
     g_test_add_func("/mini-nand/core/dma-success-order-address",
                     test_dma_success_order_address);
     g_test_add_func("/mini-nand/core/dma-overflow-precedence",

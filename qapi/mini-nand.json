@@ -1,0 +1,91 @@
+##
+# @MiniNandQmpStatus:
+#
+# Mini NAND status.
+#
+# @idle: no command is active
+# @busy: a command is executing
+# @done: the last command succeeded
+# @error: the last command failed
+##
+{ 'enum': 'MiniNandQmpStatus', 'data': [ 'idle', 'busy', 'done', 'error' ] }
+##
+# @MiniNandQmpError:
+#
+# Mini NAND error code.
+#
+# @none: no error
+# @invalid-command: command was rejected
+# @invalid-page: page was rejected
+# @invalid-length: length was rejected
+# @dma: DMA failed
+# @uncorrectable: injected read fault
+##
+{ 'enum': 'MiniNandQmpError', 'data': [ 'none', 'invalid-command', 'invalid-page', 'invalid-length', 'dma', 'uncorrectable' ] }
+##
+# @MiniNandQmpOperation:
+#
+# Operation reported by a fault event.
+#
+# @read: read command
+##
+{ 'enum': 'MiniNandQmpOperation', 'data': [ 'read' ] }
+##
+# @MiniNandQmpInfo:
+#
+# Prelaunch Mini NAND snapshot.
+#
+# @fault-enabled: whether fault injection is enabled
+# @nth: configured eligible read sequence
+# @once: once-only policy value
+# @eligible-sequence: current eligible read sequence
+# @fired: whether the once-only fault fired
+# @status: current controller status
+# @error: current controller error
+# @read-count: successful eligible read attempts
+# @fault-count: injected fault count
+# @irq-status: pending interrupt bits
+# @irq-enable: enabled interrupt bits
+##
+{ 'struct': 'MiniNandQmpInfo', 'data': {
+    'fault-enabled': 'bool', 'nth': 'uint32', 'once': 'bool',
+    'eligible-sequence': 'uint32', 'fired': 'bool',
+    'status': 'MiniNandQmpStatus', 'error': 'MiniNandQmpError',
+    'read-count': 'uint32', 'fault-count': 'uint32',
+    'irq-status': 'uint32', 'irq-enable': 'uint32' } }
+##
+# @x-mini-nand-set-fault:
+#
+# Configure the once-only fault policy in prelaunch.
+#
+# @nth: eligible read sequence, greater than zero
+# @once: must be true
+##
+{ 'command': 'x-mini-nand-set-fault', 'data': { 'nth': 'uint32', 'once': 'bool' } }
+##
+# @x-mini-nand-clear-fault:
+#
+# Clear the prelaunch fault policy.
+##
+{ 'command': 'x-mini-nand-clear-fault' }
+##
+# @x-query-mini-nand:
+#
+# Query the controller during prelaunch.
+#
+# Returns: current Mini NAND snapshot
+##
+{ 'command': 'x-query-mini-nand', 'returns': 'MiniNandQmpInfo' }
+##
+# @MINI_NAND_FAULT_INJECTED:
+#
+# Report a settled once-only read fault.
+#
+# @operation: faulting operation
+# @page: submitted page
+# @sequence: eligible read sequence
+# @error: settled error
+##
+{ 'event': 'MINI_NAND_FAULT_INJECTED', 'data': {
+    'operation': 'MiniNandQmpOperation', 'page': 'uint32',
+    'sequence': 'uint32', 'error': 'MiniNandQmpError' } }

@@ -155,6 +155,9 @@ if have_system
       meson.project_source_root() / 'hw/misc/mini-nand-mmio.c',
       meson.project_source_root() / 'hw/misc/mini-nand-flash.c',
     ],
+    'test-mini-nand-qmp-stub': [
+      meson.project_source_root() / 'stubs/monitor-mini-nand.c',
+    ],
   }
   if config_host_data.get('CONFIG_INOTIFY1')
     tests += {'test-util-filemonitor': []}

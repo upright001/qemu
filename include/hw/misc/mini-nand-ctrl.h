@@ -18,4 +18,9 @@ struct MiniNandCtrlState {
     uint32_t fail_nth;
 };
 
+void mini_nand_ctrl_configure_fault_once(MiniNandCtrlState *ctrl,
+                                         uint32_t nth);
+void mini_nand_ctrl_clear_fault(MiniNandCtrlState *ctrl);
+MiniNandCoreSnapshot mini_nand_ctrl_snapshot(const MiniNandCtrlState *ctrl);
+
 #endif

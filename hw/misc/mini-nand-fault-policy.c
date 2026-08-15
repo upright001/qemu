@@ -27,3 +27,28 @@ bool mini_nand_fault_policy_evaluate_read(MiniNandFaultPolicy *policy)
     }
     return false;
 }
+
+void mini_nand_fault_policy_configure_once(MiniNandFaultPolicy *policy,
+                                           uint32_t nth)
+{
+    /* QMP control은 reset과 달리 설정값을 바꾸되 sequence만 새로 무장한다. */
+    policy->config.fail_nth = nth;
+    mini_nand_fault_policy_reset(policy);
+}
+
+void mini_nand_fault_policy_clear(MiniNandFaultPolicy *policy)
+{
+    mini_nand_fault_policy_configure_once(policy, 0);
+}
+
+MiniNandFaultPolicySnapshot mini_nand_fault_policy_snapshot(
+    const MiniNandFaultPolicy *policy)
+{
+    return (MiniNandFaultPolicySnapshot) {
+        .enabled = policy->config.fail_nth != 0,
+        .nth = policy->config.fail_nth,
+        .once = MINI_NAND_FAULT_ONCE,
+        .eligible_sequence = policy->eligible_read_sequence,
+        .fired = policy->fired,
+    };
+}

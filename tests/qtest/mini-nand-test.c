@@ -195,6 +195,79 @@ static QTestState *mini_nand_qtest_start(bool enabled, uint32_t fail_nth)
                        enabled ? "on" : "off", fail_nth);
 }
 
+static QTestState *mini_nand_qtest_start_prelaunch(void)
+{
+    QTestState *qts = qtest_initf(
+        "-S -M virt,aia=none,mini-nand=on,mini-nand-fail-nth=0 "
+        "-smp 1 -m 128M -bios none");
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{ 'execute': 'query-status' }");
+    QDict *status = qdict_get_qdict(response, "return");
+
+    g_assert_cmpstr(qdict_get_str(status, "status"), ==, "prelaunch");
+    return qts;
+}
+
+static void mini_nand_qmp_expect_success(QTestState *qts, const char *command)
+{
+    g_autoptr(QDict) response = qtest_qmp(qts, command);
+
+    if (!qdict_haskey(response, "return")) {
+        QDict *error = qdict_get_qdict(response, "error");
+        g_test_message("QMP failure for %s: %s", command,
+                       error ? qdict_get_str(error, "desc") : "missing error");
+    }
+    g_assert(qdict_haskey(response, "return"));
+}
+
+static void mini_nand_qmp_expect_error(QTestState *qts, const char *command,
+                                       const char *description)
+{
+    g_autoptr(QDict) response = qtest_qmp(qts, command);
+    QDict *error = qdict_get_qdict(response, "error");
+
+    g_assert_nonnull(error);
+    g_assert_cmpstr(qdict_get_str(error, "desc"), ==, description);
+}
+
+static void mini_nand_qmp_expect_any_error(QTestState *qts, const char *command)
+{
+    g_autoptr(QDict) response = qtest_qmp(qts, command);
+
+    g_assert_nonnull(qdict_get_qdict(response, "error"));
+}
+
+static void mini_nand_qmp_expect_status(QTestState *qts, const char *expected)
+{
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{ 'execute': 'query-status' }");
+
+    g_assert_cmpstr(qdict_get_str(qdict_get_qdict(response, "return"), "status"),
+                    ==, expected);
+}
+
+static void mini_nand_qmp_assert_snapshot(QTestState *qts, bool enabled,
+                                          uint32_t nth, uint32_t sequence,
+                                          bool fired)
+{
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{ 'execute': 'x-query-mini-nand' }");
+    QDict *info = qdict_get_qdict(response, "return");
+
+    g_assert_cmpuint(qdict_size(info), ==, 11);
+    g_assert_cmpint(qdict_get_bool(info, "fault-enabled"), ==, enabled);
+    g_assert_cmpuint(qdict_get_uint(info, "nth"), ==, nth);
+    g_assert_true(qdict_get_bool(info, "once"));
+    g_assert_cmpuint(qdict_get_uint(info, "eligible-sequence"), ==, sequence);
+    g_assert_cmpint(qdict_get_bool(info, "fired"), ==, fired);
+    g_assert_cmpstr(qdict_get_str(info, "status"), ==, "idle");
+    g_assert_cmpstr(qdict_get_str(info, "error"), ==, "none");
+    g_assert_cmpuint(qdict_get_uint(info, "read-count"), ==, 0);
+    g_assert_cmpuint(qdict_get_uint(info, "fault-count"), ==, 0);
+    g_assert_cmpuint(qdict_get_uint(info, "irq-status"), ==, 0);
+    g_assert_cmpuint(qdict_get_uint(info, "irq-enable"), ==, 0);
+}
+
 static uint32_t mini_nand_readl(QTestState *qts, uint32_t offset)
 {
     return qtest_readl(qts, MINI_NAND_BASE + offset);
@@ -824,6 +897,195 @@ static void test_trace_sequence(void)
     qtest_quit(qts);
 }
 
+static void test_qmp_schema_query_exact(void)
+{
+    QTestState *qts = mini_nand_qtest_start_prelaunch();
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{ 'execute': 'x-query-mini-nand' }");
+    QDict *info = qdict_get_qdict(response, "return");
+    const char *keys[] = {
+        "fault-enabled", "nth", "once", "eligible-sequence", "fired",
+        "status", "error", "read-count", "fault-count", "irq-status",
+        "irq-enable",
+    };
+
+    g_assert_cmpuint(qdict_size(info), ==, 11);
+    for (size_t index = 0; index < G_N_ELEMENTS(keys); index++) {
+        g_assert(qdict_haskey(info, keys[index]));
+    }
+    g_assert_false(qdict_get_bool(info, "fault-enabled"));
+    g_assert_cmpuint(qdict_get_uint(info, "nth"), ==, 0);
+    g_assert_true(qdict_get_bool(info, "once"));
+    g_assert_cmpuint(qdict_get_uint(info, "eligible-sequence"), ==, 0);
+    g_assert_false(qdict_get_bool(info, "fired"));
+    g_assert_cmpstr(qdict_get_str(info, "status"), ==, "idle");
+    g_assert_cmpstr(qdict_get_str(info, "error"), ==, "none");
+    qtest_quit(qts);
+}
+
+static void test_qmp_prelaunch_set_clear_query(void)
+{
+    QTestState *qts = mini_nand_qtest_start_prelaunch();
+
+    mini_nand_qmp_assert_snapshot(qts, false, 0, 0, false);
+    mini_nand_qmp_expect_success(qts, "{ 'execute': 'x-mini-nand-set-fault', "
+                                 "'arguments': { 'nth': 3, 'once': true } }");
+    mini_nand_qmp_assert_snapshot(qts, true, 3, 0, false);
+    mini_nand_qmp_expect_success(qts, "{ 'execute': 'x-mini-nand-clear-fault' }");
+    mini_nand_qmp_assert_snapshot(qts, false, 0, 0, false);
+    qtest_quit(qts);
+}
+
+static void test_qmp_validation_precedence(void)
+{
+    QTestState *qts = mini_nand_qtest_start_prelaunch();
+
+    mini_nand_qmp_expect_error(qts, "{ 'execute': 'x-mini-nand-set-fault', "
+                                "'arguments': { 'nth': 0, 'once': false } }",
+                                "nth must be greater than zero");
+    mini_nand_qmp_expect_error(qts, "{ 'execute': 'x-mini-nand-set-fault', "
+                                "'arguments': { 'nth': 3, 'once': false } }",
+                                "once must be true");
+    mini_nand_qmp_expect_any_error(qts,
+        "{ 'execute': 'x-mini-nand-set-fault', 'arguments': { 'once': true } }");
+    mini_nand_qmp_expect_any_error(qts,
+        "{ 'execute': 'x-mini-nand-set-fault', 'arguments': { 'nth': 3, "
+        "'once': true, 'extra': 1 } }");
+    mini_nand_qmp_expect_any_error(qts,
+        "{ 'execute': 'x-mini-nand-set-fault', 'arguments': { 'nth': 'bad', "
+        "'once': true } }");
+    qtest_quit(qts);
+    qts = qtest_initf("-S -M virt,aia=none,mini-nand=off -smp 1 -m 128M "
+                      "-bios none");
+    mini_nand_qmp_expect_status(qts, "prelaunch");
+    mini_nand_qmp_expect_error(qts, "{ 'execute': 'x-mini-nand-set-fault', "
+                                "'arguments': { 'nth': 3, 'once': true } }",
+                                "MiniNand controller '/machine/mini-nand-ctrl' is not available");
+    qtest_quit(qts);
+}
+
+static void test_qmp_runstate_reject(void)
+{
+    QTestState *qts = mini_nand_qtest_start(true, 0);
+
+    mini_nand_qmp_expect_status(qts, "running");
+    mini_nand_qmp_expect_error(qts, "{ 'execute': 'x-mini-nand-set-fault', "
+                                "'arguments': { 'nth': 3, 'once': true } }",
+                                "command is available only in prelaunch");
+    mini_nand_qmp_expect_error(qts, "{ 'execute': 'x-mini-nand-clear-fault' }",
+                                "command is available only in prelaunch");
+    mini_nand_qmp_expect_error(qts, "{ 'execute': 'x-query-mini-nand' }",
+                                "command is available only in prelaunch");
+    qtest_qmp_assert_success(qts, "{ 'execute': 'stop' }");
+    mini_nand_qmp_expect_status(qts, "paused");
+    mini_nand_qmp_expect_error(qts, "{ 'execute': 'x-mini-nand-set-fault', "
+                                "'arguments': { 'nth': 3, 'once': true } }",
+                                "command is available only in prelaunch");
+    mini_nand_qmp_expect_error(qts, "{ 'execute': 'x-mini-nand-clear-fault' }",
+                                "command is available only in prelaunch");
+    mini_nand_qmp_expect_error(qts, "{ 'execute': 'x-query-mini-nand' }",
+                                "command is available only in prelaunch");
+    qtest_quit(qts);
+}
+
+static void test_qmp_no_side_effects(void)
+{
+    QTestState *qts = mini_nand_qtest_start_prelaunch();
+    MiniNandSnapshot before;
+    MiniNandSnapshot after;
+
+    mini_nand_intercept_irq(qts);
+    mini_nand_fill_memory(qts, 0xa5);
+    mini_nand_snapshot(qts, &before);
+    mini_nand_qmp_expect_error(qts, "{ 'execute': 'x-mini-nand-set-fault', "
+                                "'arguments': { 'nth': 0, 'once': true } }",
+                                "nth must be greater than zero");
+    mini_nand_qmp_expect_success(qts, "{ 'execute': 'x-mini-nand-set-fault', "
+                                 "'arguments': { 'nth': 3, 'once': true } }");
+    mini_nand_qmp_expect_success(qts, "{ 'execute': 'x-mini-nand-clear-fault' }");
+    mini_nand_snapshot(qts, &after);
+    mini_nand_assert_snapshot_equal(&before, &after);
+    qtest_quit(qts);
+}
+
+static void test_qmp_event_third_fault(void)
+{
+    QTestState *qts = mini_nand_qtest_start_prelaunch();
+    g_autoptr(QDict) event = NULL;
+
+    mini_nand_qmp_expect_success(qts, "{ 'execute': 'x-mini-nand-set-fault', "
+                                 "'arguments': { 'nth': 3, 'once': true } }");
+    mini_nand_qmp_expect_success(qts, "{ 'execute': 'cont' }");
+    mini_nand_read(qts, MINI_NAND_DMA);
+    mini_nand_read(qts, MINI_NAND_DMA);
+    mini_nand_read(qts, MINI_NAND_DMA);
+    event = qtest_qmp_eventwait_ref(qts, "MINI_NAND_FAULT_INJECTED");
+    QDict *data = qdict_get_qdict(event, "data");
+    g_assert_cmpuint(qdict_size(data), ==, 4);
+    g_assert_cmpstr(qdict_get_str(data, "operation"), ==, "read");
+    g_assert_cmpuint(qdict_get_uint(data, "page"), ==,
+                     MINI_NAND_PAGE);
+    g_assert_cmpuint(qdict_get_uint(data, "sequence"), ==, 3);
+    g_assert_cmpstr(qdict_get_str(data, "error"), ==, "uncorrectable");
+    g_assert(qdict_haskey(event, "timestamp"));
+    QDict *timestamp = qdict_get_qdict(event, "timestamp");
+    g_assert_cmpuint(qdict_size(timestamp), ==, 2);
+    g_assert_cmpuint(qdict_get_uint(timestamp, "seconds"), >, 0);
+    g_assert_cmpuint(qdict_get_uint(timestamp, "microseconds"), <, 1000000);
+    mini_nand_read(qts, MINI_NAND_DMA);
+    g_assert_cmpuint(mini_nand_readl(qts, REG_FAULT_COUNT), ==, 1);
+    g_assert_null(qtest_qmp_event_ref(qts, "MINI_NAND_FAULT_INJECTED"));
+    qtest_quit(qts);
+}
+
+static void test_qmp_reset_preserve_rearm(void)
+{
+    QTestState *qts = mini_nand_qtest_start_prelaunch();
+    MiniNandSnapshot memory_before;
+    MiniNandSnapshot memory_after;
+
+    mini_nand_qmp_expect_success(qts, "{ 'execute': 'x-mini-nand-set-fault', "
+                                 "'arguments': { 'nth': 3, 'once': true } }");
+    mini_nand_qmp_expect_success(qts, "{ 'execute': 'cont' }");
+    mini_nand_intercept_irq(qts);
+    mini_nand_fill_memory(qts, 0xa5);
+    mini_nand_snapshot(qts, &memory_before);
+    mini_nand_read(qts, MINI_NAND_DMA);
+    mini_nand_read(qts, MINI_NAND_DMA);
+    mini_nand_read(qts, MINI_NAND_DMA);
+    qtest_qmp_eventwait(qts, "MINI_NAND_FAULT_INJECTED");
+    mini_nand_command(qts, MINI_NAND_CMD_RESET);
+    g_assert_cmpuint(mini_nand_readl(qts, REG_READ_COUNT), ==, 0);
+    g_assert_cmpuint(mini_nand_readl(qts, REG_IRQ_STATUS), ==, 0);
+    mini_nand_expect_irq(qts, false);
+    mini_nand_snapshot(qts, &memory_after);
+    g_assert_cmpmem(memory_before.dma, sizeof(memory_before.dma),
+                    memory_after.dma, sizeof(memory_after.dma));
+    g_assert_cmpmem(memory_before.guard_before, sizeof(memory_before.guard_before),
+                    memory_after.guard_before, sizeof(memory_after.guard_before));
+    g_assert_cmpmem(memory_before.guard_after, sizeof(memory_before.guard_after),
+                    memory_after.guard_after, sizeof(memory_after.guard_after));
+    mini_nand_read(qts, MINI_NAND_DMA);
+    mini_nand_read(qts, MINI_NAND_DMA);
+    mini_nand_read(qts, MINI_NAND_DMA);
+    qtest_qmp_eventwait(qts, "MINI_NAND_FAULT_INJECTED");
+    mini_nand_snapshot(qts, &memory_before);
+    qtest_system_reset(qts);
+    mini_nand_expect_reset_state(qts);
+    mini_nand_snapshot(qts, &memory_after);
+    g_assert_cmpmem(memory_before.dma, sizeof(memory_before.dma),
+                    memory_after.dma, sizeof(memory_after.dma));
+    g_assert_cmpmem(memory_before.guard_before, sizeof(memory_before.guard_before),
+                    memory_after.guard_before, sizeof(memory_after.guard_before));
+    g_assert_cmpmem(memory_before.guard_after, sizeof(memory_before.guard_after),
+                    memory_after.guard_after, sizeof(memory_after.guard_after));
+    mini_nand_read(qts, MINI_NAND_DMA);
+    mini_nand_read(qts, MINI_NAND_DMA);
+    mini_nand_read(qts, MINI_NAND_DMA);
+    qtest_qmp_eventwait(qts, "MINI_NAND_FAULT_INJECTED");
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -858,5 +1120,17 @@ int main(int argc, char **argv)
     g_test_add_func("/mini-nand/reset/command", test_reset_command);
     g_test_add_func("/mini-nand/reset/system", test_reset_system);
     g_test_add_func("/mini-nand/trace/sequence", test_trace_sequence);
+    g_test_add_func("/mini-nand/qmp/schema-query-exact",
+                    test_qmp_schema_query_exact);
+    g_test_add_func("/mini-nand/qmp/prelaunch-set-clear-query",
+                    test_qmp_prelaunch_set_clear_query);
+    g_test_add_func("/mini-nand/qmp/validation-precedence",
+                    test_qmp_validation_precedence);
+    g_test_add_func("/mini-nand/qmp/runstate-reject",
+                    test_qmp_runstate_reject);
+    g_test_add_func("/mini-nand/qmp/no-side-effects", test_qmp_no_side_effects);
+    g_test_add_func("/mini-nand/qmp/event-third-fault", test_qmp_event_third_fault);
+    g_test_add_func("/mini-nand/qmp/reset-preserve-rearm",
+                    test_qmp_reset_preserve_rearm);
     return g_test_run();
 }

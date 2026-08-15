@@ -3,6 +3,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/misc/mini-nand-ctrl.h"
 #include "hw/misc/mini-nand-mmio.h"
+#include "hw/misc/mini-nand-qmp.h"
 #include "system/address-spaces.h"
 
 static void mini_nand_ctrl_sync_irq(MiniNandCtrlState *s)
@@ -15,6 +16,22 @@ static void mini_nand_ctrl_post_write(void *opaque)
     MiniNandCtrlState *s = opaque;
 
     mini_nand_ctrl_sync_irq(s);
+}
+
+void mini_nand_ctrl_configure_fault_once(MiniNandCtrlState *ctrl,
+                                         uint32_t nth)
+{
+    mini_nand_core_configure_fault_once(&ctrl->core, nth);
+}
+
+void mini_nand_ctrl_clear_fault(MiniNandCtrlState *ctrl)
+{
+    mini_nand_core_clear_fault(&ctrl->core);
+}
+
+MiniNandCoreSnapshot mini_nand_ctrl_snapshot(const MiniNandCtrlState *ctrl)
+{
+    return mini_nand_core_snapshot(&ctrl->core);
 }
 
 static void mini_nand_ctrl_init(Object *obj)
@@ -41,6 +58,7 @@ static void mini_nand_ctrl_realize(DeviceState *dev, Error **errp)
                         (MiniNandFaultConfig){ .fail_nth = s->fail_nth });
     mini_nand_mmio_adapter_init(&s->adapter, &s->core,
                                 mini_nand_ctrl_post_write, s);
+    mini_nand_qmp_attach(s);
     mini_nand_ctrl_sync_irq(s);
 }
 

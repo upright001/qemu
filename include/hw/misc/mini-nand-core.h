@@ -86,6 +86,16 @@ typedef struct MiniNandCore {
     uint8_t page_buffer[MINI_NAND_FLASH_PAGE_SIZE];
 } MiniNandCore;
 
+typedef struct MiniNandCoreSnapshot {
+    MiniNandFaultPolicySnapshot fault;
+    uint32_t status;
+    uint32_t error_code;
+    uint32_t read_count;
+    uint32_t fault_count;
+    uint32_t irq_status;
+    uint32_t irq_enable;
+} MiniNandCoreSnapshot;
+
 void mini_nand_core_init(MiniNandCore *core,
                          MiniNandReadFn flash_read,
                          MiniNandDmaWriteFn dma_write,
@@ -99,5 +109,8 @@ uint32_t mini_nand_core_read(const MiniNandCore *core,
 MiniNandAccessResult mini_nand_core_write(MiniNandCore *core,
                                           uint32_t offset,
                                           uint32_t value);
+void mini_nand_core_configure_fault_once(MiniNandCore *core, uint32_t nth);
+void mini_nand_core_clear_fault(MiniNandCore *core);
+MiniNandCoreSnapshot mini_nand_core_snapshot(const MiniNandCore *core);
 
 #endif

@@ -62,6 +62,39 @@ static void test_reset_preserves_config_and_rearms(void)
     }
 }
 
+static void test_qmp_configure_clear_and_snapshot(void)
+{
+    MiniNandFaultPolicy policy;
+    MiniNandFaultPolicySnapshot snapshot;
+
+    mini_nand_fault_policy_init(&policy, (MiniNandFaultConfig){ .fail_nth = 3 });
+    mini_nand_fault_policy_evaluate_read(&policy);
+    mini_nand_fault_policy_configure_once(&policy, 2);
+    snapshot = mini_nand_fault_policy_snapshot(&policy);
+    g_assert_true(snapshot.enabled);
+    g_assert_cmpuint(snapshot.nth, ==, 2);
+    g_assert_true(snapshot.once);
+    g_assert_cmpuint(snapshot.eligible_sequence, ==, 0);
+    g_assert_false(snapshot.fired);
+    g_assert_false(mini_nand_fault_policy_evaluate_read(&policy));
+    g_assert_true(mini_nand_fault_policy_evaluate_read(&policy));
+
+    mini_nand_fault_policy_clear(&policy);
+    snapshot = mini_nand_fault_policy_snapshot(&policy);
+    g_assert_false(snapshot.enabled);
+    g_assert_cmpuint(snapshot.nth, ==, 0);
+    g_assert_true(snapshot.once);
+    g_assert_cmpuint(snapshot.eligible_sequence, ==, 0);
+    g_assert_false(snapshot.fired);
+    mini_nand_fault_policy_clear(&policy);
+    snapshot = mini_nand_fault_policy_snapshot(&policy);
+    g_assert_false(snapshot.enabled);
+    g_assert_cmpuint(snapshot.nth, ==, 0);
+    g_assert_true(snapshot.once);
+    g_assert_cmpuint(snapshot.eligible_sequence, ==, 0);
+    g_assert_false(snapshot.fired);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -73,5 +106,7 @@ int main(int argc, char **argv)
                     test_third_read_matches_and_fourth_is_normal);
     g_test_add_func("/mini-nand-fault-policy/reset-rearm",
                     test_reset_preserves_config_and_rearms);
+    g_test_add_func("/mini-nand-fault-policy/qmp-configure-clear-snapshot",
+                    test_qmp_configure_clear_and_snapshot);
     return g_test_run();
 }
