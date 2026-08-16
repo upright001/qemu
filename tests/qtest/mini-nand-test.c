@@ -1054,11 +1054,11 @@ static void test_qmp_reset_preserve_rearm(void)
     mini_nand_qmp_expect_success(qts, "{ 'execute': 'cont' }");
     mini_nand_intercept_irq(qts);
     mini_nand_fill_memory(qts, 0xa5);
-    mini_nand_snapshot(qts, &memory_before);
     mini_nand_read(qts, MINI_NAND_DMA);
     mini_nand_read(qts, MINI_NAND_DMA);
     mini_nand_read(qts, MINI_NAND_DMA);
     qtest_qmp_eventwait(qts, "MINI_NAND_FAULT_INJECTED");
+    mini_nand_snapshot(qts, &memory_before);
     mini_nand_command(qts, MINI_NAND_CMD_RESET);
     g_assert_cmpuint(mini_nand_readl(qts, REG_READ_COUNT), ==, 0);
     g_assert_cmpuint(mini_nand_readl(qts, REG_IRQ_STATUS), ==, 0);
