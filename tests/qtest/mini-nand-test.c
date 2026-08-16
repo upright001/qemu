@@ -10,8 +10,10 @@
 #include "qemu/osdep.h"
 
 #include "libqtest.h"
+#include "qapi/error.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
+#include "qobject/qjson.h"
 
 #define MINI_NAND_BASE              0x10110000ULL
 #define MINI_NAND_DMA               0x81000000ULL
@@ -210,7 +212,8 @@ static QTestState *mini_nand_qtest_start_prelaunch(void)
 
 static void mini_nand_qmp_expect_success(QTestState *qts, const char *command)
 {
-    g_autoptr(QDict) response = qtest_qmp(qts, command);
+    g_autoptr(QDict) response = qtest_qmp(
+        qts, "%p", qobject_from_json(command, &error_abort));
 
     if (!qdict_haskey(response, "return")) {
         QDict *error = qdict_get_qdict(response, "error");
@@ -223,7 +226,8 @@ static void mini_nand_qmp_expect_success(QTestState *qts, const char *command)
 static void mini_nand_qmp_expect_error(QTestState *qts, const char *command,
                                        const char *description)
 {
-    g_autoptr(QDict) response = qtest_qmp(qts, command);
+    g_autoptr(QDict) response = qtest_qmp(
+        qts, "%p", qobject_from_json(command, &error_abort));
     QDict *error = qdict_get_qdict(response, "error");
 
     g_assert_nonnull(error);
@@ -232,7 +236,8 @@ static void mini_nand_qmp_expect_error(QTestState *qts, const char *command,
 
 static void mini_nand_qmp_expect_any_error(QTestState *qts, const char *command)
 {
-    g_autoptr(QDict) response = qtest_qmp(qts, command);
+    g_autoptr(QDict) response = qtest_qmp(
+        qts, "%p", qobject_from_json(command, &error_abort));
 
     g_assert_nonnull(qdict_get_qdict(response, "error"));
 }
