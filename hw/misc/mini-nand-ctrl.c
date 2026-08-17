@@ -11,6 +11,20 @@ static void mini_nand_ctrl_sync_irq(MiniNandCtrlState *s)
     qemu_set_irq(s->irq, mini_nand_core_irq_level(&s->core));
 }
 
+/*
+ * 들어오는 곳:
+ * hw/misc/mini-nand-mmio.c::mini_nand_mmio_write가 호출한다.
+ * 성공한 모든 register write 뒤의 callback이다.
+ * 현재 역할:
+ * core의 IRQ predicate를 qemu_set_irq로 output line에 반영한다.
+ * 다음에 볼 코드:
+ * hw/riscv/virt.c::virt_create_mini_nand가 이 line을
+ * PLIC source 48인 VIRT_MINI_NAND_IRQ에 연결한다.
+ * 주의:
+ * 이는 host-side line sync다.
+ * QEMU C callback은 firmware ISR을 직접 호출하지 않는다.
+ * PLIC 전달 뒤 CPU가 mtvec으로 진입한다.
+ */
 static void mini_nand_ctrl_post_write(void *opaque)
 {
     MiniNandCtrlState *s = opaque;

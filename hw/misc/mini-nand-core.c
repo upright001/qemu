@@ -117,6 +117,21 @@ uint32_t mini_nand_core_read(const MiniNandCore *core,
     }
 }
 
+/*
+ * 들어오는 곳:
+ * hw/misc/mini-nand-mmio.c::mini_nand_mmio_write가 호출한다.
+ * pure-core unit도 같은 API를 직접 호출한다.
+ * 현재 역할:
+ * register policy와 동기 READ state machine을 소유한다.
+ * 유효 READ는 Flash fill -> guest DMA -> DONE/COMPLETE 순서다.
+ * 다음에 볼 코드:
+ * hw/misc/mini-nand-flash.c::mini_nand_flash_read와
+ * hw/misc/mini-nand-mmio.c::mini_nand_mmio_dma_write다.
+ * 주의:
+ * COMMAND=RESET은 Flash/DMA 없이 core state를 초기화한다.
+ * 따라서 guest memory는 건드리지 않는다.
+ * IRQ_STATUS latch는 아직 PLIC/CPU trap이 아니다.
+ */
 MiniNandAccessResult mini_nand_core_write(MiniNandCore *core,
                                           uint32_t offset,
                                           uint32_t value)
@@ -186,6 +201,19 @@ MiniNandAccessResult mini_nand_core_write(MiniNandCore *core,
         core->status = MINI_NAND_STATUS_BUSY;
         core->result_valid = false;
         core->read_count++;
+        /*
+         * 들어오는 곳:
+         * command/page/length/DMA 검증을 모두 통과한 READ다.
+         * 현재 역할:
+         * eligible sequence를 소비하고 세 번째 match면
+         * ERROR/UNCORRECTABLE과 ERROR IRQ를 latch한다.
+         * 다음에 볼 코드:
+         * non-match는 아래 flash_read와 dma_write로 진행한다.
+         * match는 mini_nand_mmio_write로 즉시 돌아간다.
+         * 주의:
+         * match 판단은 Flash/DMA callback보다 앞이다.
+         * once policy가 fired라 네 번째 eligible READ는 정상이다.
+         */
         if (mini_nand_fault_policy_evaluate_read(&core->fault_policy)) {
             /*
              * Fault match는 기존 내부 결과와 guest memory를 보존하려고

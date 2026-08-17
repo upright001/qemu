@@ -53,6 +53,18 @@ void qmp_x_mini_nand_set_fault(uint32_t nth, bool once, Error **errp)
 {
     MiniNandCtrlState *ctrl;
 
+    /*
+     * 들어오는 곳:
+     * generated QAPI dispatch가 x-mini-nand-set-fault를 넘긴다.
+     * 현재 역할:
+     * argument와 PRELAUNCH를 검증하고 fixed QOM object를 찾는다.
+     * 다음에 볼 코드:
+     * mini_nand_ctrl_configure_fault_once를 거쳐
+     * mini_nand_fault_policy_configure_once로 간다.
+     * 주의:
+     * 이 command는 policy만 재무장한다.
+     * READ와 fault event는 cont 뒤 MMIO 경로가 담당한다.
+     */
     if (nth == 0) {
         error_setg(errp, "nth must be greater than zero");
         return;
@@ -116,7 +128,19 @@ static void mini_nand_qmp_fault_observer(void *opaque, uint32_t command,
                                          uint32_t page, uint32_t sequence,
                                          uint32_t error)
 {
-    /* Observer는 settled IRQ 뒤에만 호출되므로 event가 terminal state를 앞서지 않는다. */
+    /*
+     * 들어오는 곳:
+     * mini_nand_mmio_write가 third/once predicate를 확인한다.
+     * post_write IRQ sync 뒤 이 observer를 호출한다.
+     * 현재 역할:
+     * settled 값으로 MINI_NAND_FAULT_INJECTED를 보낸다.
+     * 다음에 볼 코드:
+     * tests/qtest/mini-nand-test.c의 test_qmp_event_third_fault다.
+     * payload와 fourth READ의 no-second-event를 확인한다.
+     * 주의:
+     * observer는 fault를 결정하지 않는다.
+     * event는 terminal state나 IRQ line보다 앞서지 않는다.
+     */
     qapi_event_send_mini_nand_fault_injected(MINI_NAND_QMP_OPERATION_READ,
                                              page, sequence,
                                              mini_nand_qmp_error(error));

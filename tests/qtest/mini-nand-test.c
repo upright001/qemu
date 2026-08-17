@@ -602,6 +602,19 @@ static void test_read_complete_dma(void)
     uint8_t guard_before[MINI_NAND_GUARD_SIZE];
     uint8_t guard_after[MINI_NAND_GUARD_SIZE];
 
+    /*
+     * 들어오는 곳:
+     * /mini-nand/read/complete-dma selector다.
+     * 실제 qemu-system-riscv64 virt machine을 시작한다.
+     * 현재 역할:
+     * real guest DMA, DONE/COMPLETE, IRQ line을 확인한다.
+     * DMA guard 밖을 쓰지 않는지도 확인한다.
+     * 다음에 볼 코드:
+     * test_qmp_event_third_fault가 QMP control/event를 더한다.
+     * 주의:
+     * qtest_get_irq는 controller output line evidence다.
+     * firmware CPU의 mtvec/ISR 실행 자체는 증명하지 않는다.
+     */
     mini_nand_intercept_irq(qts);
     mini_nand_fill_memory(qts, 0xa5);
     mini_nand_enable_irq(qts, MINI_NAND_IRQ_COMPLETE);
@@ -1018,6 +1031,20 @@ static void test_qmp_event_third_fault(void)
     QTestState *qts = mini_nand_qtest_start_prelaunch();
     g_autoptr(QDict) event = NULL;
 
+    /*
+     * 들어오는 곳:
+     * /mini-nand/qmp/event-third-fault selector다.
+     * -S PRELAUNCH에서 policy set 뒤 cont한다.
+     * 현재 역할:
+     * real QOM/QAPI를 지난 third-fault payload를 확인한다.
+     * fourth READ에 second event가 없는지도 확인한다.
+     * 다음에 볼 코드:
+     * mini_nand_mmio_write의 observer predicate와
+     * mini_nand_qmp_fault_observer다.
+     * 주의:
+     * callback 0회와 page buffer 보존은 pure-core unit 증거다.
+     * 이 QTest는 real process MMIO/QMP integration을 보완한다.
+     */
     mini_nand_qmp_expect_success(qts, "{ 'execute': 'x-mini-nand-set-fault', "
                                  "'arguments': { 'nth': 3, 'once': true } }");
     mini_nand_qmp_expect_success(qts, "{ 'execute': 'cont' }");

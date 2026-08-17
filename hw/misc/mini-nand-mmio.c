@@ -61,6 +61,19 @@ static uint64_t mini_nand_mmio_read(void *opaque, hwaddr offset,
     return mini_nand_core_read(adapter->core, offset, &result);
 }
 
+/*
+ * 들어오는 곳:
+ * mini_nand_mmio_ops.write가 device MMIO store를 전달한다.
+ * firmware와 QTest 모두 이 MemoryRegion 경계를 지난다.
+ * 현재 역할:
+ * core 전후 snapshot, trace/log, IRQ sync, observer를 조정한다.
+ * 다음에 볼 코드:
+ * register 동작은 mini_nand_core_write로 간다.
+ * IRQ sync는 mini_nand_ctrl_post_write로 간다.
+ * 주의:
+ * post_write는 accepted store 뒤의 host C callback이다.
+ * fault observer는 IRQ line sync가 끝난 후에만 event를 보낸다.
+ */
 static void mini_nand_mmio_write(void *opaque, hwaddr offset,
                                  uint64_t value, unsigned size)
 {

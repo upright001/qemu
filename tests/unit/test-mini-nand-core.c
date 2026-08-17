@@ -821,6 +821,19 @@ static void test_third_read_fault_skips_flash_and_dma(void)
     MiniNandCore core;
     uint8_t buffer_before[MINI_NAND_FLASH_PAGE_SIZE];
 
+    /*
+     * 들어오는 곳:
+     * /mini-nand-core/fault-third-skip-fourth-normal selector다.
+     * QOM 없이 core와 spy callback만 실행한다.
+     * 현재 역할:
+     * READ 1~2의 F->D, READ 3의 callback 0회를 증명한다.
+     * buffer 보존과 READ 4 정상 복귀도 확인한다.
+     * 다음에 볼 코드:
+     * tests/qtest/mini-nand-test.c의 test_qmp_event_third_fault다.
+     * 실제 QEMU device/QMP 경계를 보완한다.
+     * 주의:
+     * 이 unit은 real MMIO, guest DMA, PLIC, QAPI를 증명하지 않는다.
+     */
     mini_nand_core_init(&core, spy_flash_read, spy_dma_write, &core,
                         (MiniNandFaultConfig){ .fail_nth = 3 });
     configure_valid_read(&core, 42);

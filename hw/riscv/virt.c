@@ -1525,6 +1525,18 @@ static void virt_create_mini_nand(RISCVVirtState *s,
 {
     DeviceState *dev;
 
+    /*
+     * 들어오는 곳:
+     * virt_machine_init가 mini-nand option과 irqchip을 넘긴다.
+     * 현재 역할:
+     * controller realize, MMIO map, IRQ route 결선을 소유한다.
+     * 다음에 볼 코드:
+     * mini_nand_ctrl_post_write의 qemu_set_irq가 이 route를 구동한다.
+     * VIRT_MINI_NAND_IRQ는 PLIC source 48이다.
+     * 주의:
+     * 이는 architectural interrupt route일 뿐이다.
+     * PLIC 전달 뒤 CPU가 firmware mtvec trap entry로 이동한다.
+     */
     if (!s->mini_nand) {
         return;
     }
