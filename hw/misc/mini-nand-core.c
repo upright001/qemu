@@ -123,11 +123,14 @@ uint32_t mini_nand_core_read(const MiniNandCore *core,
  * pure-core unit도 같은 API를 직접 호출한다.
  * 현재 역할:
  * register policy와 동기 READ state machine을 소유한다.
- * 유효 READ는 Flash fill -> guest DMA -> DONE/COMPLETE 순서다.
+ * eligible READ 중 Flash와 DMA까지 성공한 경로만
+ * Flash fill -> guest DMA -> DONE/COMPLETE 순서로 끝난다.
  * 다음에 볼 코드:
  * hw/misc/mini-nand-flash.c::mini_nand_flash_read와
  * hw/misc/mini-nand-mmio.c::mini_nand_mmio_dma_write다.
  * 주의:
+ * 세 번째 once fault는 Flash/DMA 전에 return한다.
+ * DMA 실패는 ERROR/ERROR IRQ로 끝난다.
  * COMMAND=RESET은 Flash/DMA 없이 core state를 초기화한다.
  * 따라서 guest memory는 건드리지 않는다.
  * IRQ_STATUS latch는 아직 PLIC/CPU trap이 아니다.
