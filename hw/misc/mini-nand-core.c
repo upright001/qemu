@@ -133,7 +133,10 @@ uint32_t mini_nand_core_read(const MiniNandCore *core,
  * DMA 실패는 ERROR/ERROR IRQ로 끝난다.
  * COMMAND=RESET은 Flash/DMA 없이 core state를 초기화한다.
  * 따라서 guest memory는 건드리지 않는다.
- * IRQ_STATUS latch는 아직 PLIC/CPU trap이 아니다.
+ * IRQ_STATUS는 core 내부 latch다.
+ * 이후 adapter/controller/board/guest 계층의 전달과 관찰은
+ * hw/misc/mini-nand-mmio.c::mini_nand_mmio_write와
+ * hw/misc/mini-nand-ctrl.c::mini_nand_ctrl_post_write에서 이어진다.
  */
 MiniNandAccessResult mini_nand_core_write(MiniNandCore *core,
                                           uint32_t offset,
